@@ -34,8 +34,10 @@ if(DEBUG_GLSTATE)
 	add_definitions(-DDEBUG_GLSTATE)
 endif()
 
-### give error when not found
-find_package_static(DevIL REQUIRED)
+### give error when not found (WASM: handled in top-level CMakeLists.txt)
+if (NOT IS_WASM_BUILD)
+	find_package_static(DevIL REQUIRED)
+endif ()
 
 ### Assemble common include dirs
 include_directories(BEFORE lib)
@@ -106,7 +108,7 @@ if    (USE_MIMALLOC)
 endif (USE_MIMALLOC)
 
 
-if(UNIX AND NOT (CMAKE_SYSTEM_NAME MATCHES "OpenBSD"))
+if(UNIX AND NOT IS_WASM_BUILD AND NOT (CMAKE_SYSTEM_NAME MATCHES "OpenBSD"))
 	find_package_static(Libunwind 1.4.0 REQUIRED)
 	prefer_static_libs()
 	find_library(LZMA_LIBRARY lzma)

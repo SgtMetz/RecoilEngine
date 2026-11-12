@@ -29,6 +29,12 @@ if(PREFER_STATIC_LIBS OR MINGW)
 		set(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} -static-libstdc++")
 	endif (HAVE_STATIC_LIBSTDCXX_FLAG)
 endif()
+if (IS_WASM_BUILD)
+	# WASM: no libcurl. The engine only needs prd::base64 and prd::jsoncpp from pr-downloader;
+	# a placeholder target lets the submodule configure unmodified. The pr-downloader
+	# library/executable themselves are not built for WASM.
+	add_library(prd::libcurl INTERFACE IMPORTED)
+endif ()
 add_subdirectory(pr-downloader)
 
 # add install-pr-downloader target

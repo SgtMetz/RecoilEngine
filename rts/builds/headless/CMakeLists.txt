@@ -13,7 +13,11 @@ remove_definitions(-DAVI_CAPTURING)
 
 set(OpenGL_GL_PREFERENCE LEGACY)
 
-find_package(OpenGL 3.0 REQUIRED)
+# Headless links headlessStubs instead of libGL; only the GL headers are needed.
+# WASM: Emscripten ships GL headers in its sysroot, so the system OpenGL check is skipped.
+if (NOT IS_WASM_BUILD)
+	find_package(OpenGL 3.0 REQUIRED)
+endif ()
 
 # NOTE(create_headless_target): We don't need to copy COMPILE_DEFINTIONS till the add_definitions are used.
 # We don't need to copy COMPILE_DEFINTIONS because the headless defines are defined at the folder level
@@ -40,7 +44,10 @@ list(APPEND engineHeadlessLibraries ${engineCommonLibraries})
 list(APPEND engineHeadlessLibraries no-sound)
 list(APPEND engineHeadlessLibraries engineSim)
 list(APPEND engineHeadlessLibraries squish)
-list(APPEND engineHeadlessLibraries pr-downloader)
+if (NOT IS_WASM_BUILD)
+	# WASM: no libcurl; content is preloaded into the VFS. LuaVFSDownload needs a stub (M2).
+	list(APPEND engineHeadlessLibraries pr-downloader)
+endif ()
 list(APPEND engineHeadlessLibraries RmlUi::Core)
 list(APPEND engineHeadlessLibraries RmlUi::Debugger)
 list(APPEND engineHeadlessLibraries lunasvg)
@@ -50,7 +57,16 @@ include_directories(${ENGINE_SRC_ROOT_DIR}/lib/asio/include)
 include_directories(${ENGINE_SRC_ROOT_DIR}/lib/slimsig/include)
 include_directories(${ENGINE_SRC_ROOT_DIR}/lib/cereal/include)
 
-create_headless_target_from(Game)
+if (TARGET Game)
+	create_headless_target_from(Game)
+else ()
+	# BUILD_spring-legacy=OFF (e.g. WASM): the Game target from builds/legacy does not exist,
+	# so assemble GameHeadless from the same source list directly.
+	add_library(GameHeadless STATIC)
+	target_sources(GameHeadless PRIVATE ${sources_engine_Game})
+	target_include_directories(GameHeadless PRIVATE "${CMAKE_BINARY_DIR}/src-generated/engine")
+	add_dependencies(GameHeadless generateVersionFiles)
+endif ()
 target_link_libraries(GameHeadless PRIVATE
 	Tracy::TracyClient
 	headlessStubs

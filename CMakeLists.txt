@@ -102,13 +102,19 @@ include(TestCXXFlags)
 
 ## 64-bit architecture check
 set(MARCH_FLAG ${MARCH} CACHE STRING "CPU optimization (use `generic` for generic optimization)")
-if    (NOT CMAKE_SIZEOF_VOID_P EQUAL 8)
+if    (EMSCRIPTEN)
+	# WASM port: wasm32 is allowed (better browser support and speed than memory64).
+	set(IS_WASM_BUILD TRUE)
+elseif(NOT CMAKE_SIZEOF_VOID_P EQUAL 8)
 	message(FATAL_ERROR "RecoilEngine requires a 64-bit build environment.")
-endif (NOT CMAKE_SIZEOF_VOID_P EQUAL 8)
+endif ()
 set(MARCH_BITS 64 CACHE INTERNAL "" FORCE)
 
 # Detect architecture
-if (CMAKE_SYSTEM_PROCESSOR MATCHES "arm64|aarch64|armv8|ARM64|AARCH64")
+if (IS_WASM_BUILD)
+	set(IS_ARM64_BUILD FALSE)
+	message(STATUS "Detected WebAssembly target: ${CMAKE_SYSTEM_PROCESSOR} (pointer size ${CMAKE_SIZEOF_VOID_P})")
+elseif (CMAKE_SYSTEM_PROCESSOR MATCHES "arm64|aarch64|armv8|ARM64|AARCH64")
 	set(IS_ARM64_BUILD TRUE)
 	message(STATUS "Detected ARM64 architecture: ${CMAKE_SYSTEM_PROCESSOR}")
 elseif (CMAKE_SYSTEM_PROCESSOR MATCHES "x86_64|AMD64|amd64")
@@ -309,7 +315,19 @@ endif (RECOIL_DETAILED_TRACY_ZONING)
 #  So req. checks are done in the build target's CMakeLists.txt.
 find_package(SDL2 MODULE)
 
-find_package_static(DevIL 1.8.0 REQUIRED)
+if    (IS_WASM_BUILD)
+	# WASM: use a DevIL built for Emscripten if one is on CMAKE_PREFIX_PATH,
+	# else a placeholder target (Bitmap.cpp then needs a NO_DEVIL path, see M2).
+	find_package(DevIL 1.8.0)
+	if (NOT DevIL_FOUND)
+		message(WARNING "WASM: DevIL not found, image loading will be stubbed (WASM_NO_DEVIL)")
+		add_library(DevIL::IL INTERFACE IMPORTED)
+		add_compile_definitions(WASM_NO_DEVIL)
+		set(DevIL_FOUND TRUE)
+	endif ()
+else  ()
+	find_package_static(DevIL 1.8.0 REQUIRED)
+endif ()
 
 if    (WIN32)
 	find_package(Windres REQUIRED)
@@ -498,6 +516,10 @@ elseif (MSVC)
 	set(MSVC_CXX_FLAGS "/arch:SSE2") #default, but still set explicitly
 	# silence warnings
 	add_definitions(-D_SILENCE_STDEXT_HASH_DEPRECATION_WARNINGS)
+elseif (IS_WASM_BUILD)
+	# Emscripten: SSE/SSE2 intrinsics are lowered to WASM SIMD128. No FMA fusion (sync).
+	set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -msimd128 -msse -msse2 -ffp-contract=off")
+	set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -msimd128 -ffp-contract=off")
 elseif ("${CMAKE_CXX_COMPILER_ID}" STREQUAL "Clang" OR "${CMAKE_CXX_COMPILER_ID}" STREQUAL "AppleClang")
 	# Clang on ARM64: no SSE flags needed, use armv8-a with NEON SIMD
 	if (IS_ARM64_BUILD)

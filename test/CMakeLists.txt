@@ -3,7 +3,7 @@ add_definitions(-DCATCH_AMALGAMATED_CUSTOM_MAIN)
 # defines spring_test_compile_fail macro
 include(${CMAKE_CURRENT_SOURCE_DIR}/tools/CompileFailTest/CompileFailTest.cmake)
 
-if    (UNIX AND (NOT APPLE) AND (NOT MINGW))
+if    (UNIX AND (NOT APPLE) AND (NOT MINGW) AND (NOT IS_WASM_BUILD))
 	find_library(REALTIME_LIBRARY rt)
 
 	if    (PREFER_STATIC_LIBS AND NOT EXISTS "${REALTIME_LIBRARY}")
