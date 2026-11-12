@@ -27,7 +27,11 @@
 #endif
 
 // --- Architecture detection ---
-#if defined(__aarch64__) || defined(__arm64__)
+#if defined(__wasm64__)
+static const char* ARCH_STR = "wasm64";
+#elif defined(__wasm32__)
+static const char* ARCH_STR = "wasm32";
+#elif defined(__aarch64__) || defined(__arm64__)
 static const char* ARCH_STR = "arm64";
 #elif defined(__x86_64__) || defined(_M_X64)
 static const char* ARCH_STR = "x86_64";

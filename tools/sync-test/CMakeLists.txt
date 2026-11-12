@@ -7,7 +7,10 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 # --- STREFLOP mode selection ---
 # Override with -DSTREFLOP_MODE=SSE|NEON|SOFT (default: auto-detect)
 if(NOT DEFINED STREFLOP_MODE)
-	if(CMAKE_SYSTEM_PROCESSOR MATCHES "aarch64|arm64|armv8")
+	if(EMSCRIPTEN)
+		# Emscripten reports CMAKE_SYSTEM_PROCESSOR=x86, so check it first
+		set(STREFLOP_MODE "WASM")
+	elseif(CMAKE_SYSTEM_PROCESSOR MATCHES "aarch64|arm64|armv8")
 		set(STREFLOP_MODE "NEON")
 	else()
 		set(STREFLOP_MODE "SSE")
@@ -16,8 +19,8 @@ endif()
 
 string(TOUPPER "${STREFLOP_MODE}" STREFLOP_MODE)
 
-if(NOT STREFLOP_MODE MATCHES "^(SSE|NEON|SOFT|X87)$")
-	message(FATAL_ERROR "Invalid STREFLOP_MODE '${STREFLOP_MODE}'. Must be SSE, NEON, SOFT, or X87.")
+if(NOT STREFLOP_MODE MATCHES "^(SSE|NEON|SOFT|X87|WASM)$")
+	message(FATAL_ERROR "Invalid STREFLOP_MODE '${STREFLOP_MODE}'. Must be SSE, NEON, SOFT, X87 or WASM.")
 endif()
 
 message(STATUS "STREFLOP mode: ${STREFLOP_MODE}")
@@ -80,7 +83,11 @@ if(CMAKE_CXX_COMPILER_ID MATCHES "Clang|GNU")
 	# Strict aliasing and IEEE compliance
 	add_compile_options(-fno-strict-aliasing)
 
-	if(CMAKE_SYSTEM_PROCESSOR MATCHES "aarch64|arm64|armv8")
+	if(EMSCRIPTEN)
+		# Same flags as the engine's WASM build; NODERAWFS lets the test write its result files under Node
+		add_compile_options(-msimd128 -msse -msse2)
+		add_link_options(-sNODERAWFS=1 -sALLOW_MEMORY_GROWTH=1)
+	elseif(CMAKE_SYSTEM_PROCESSOR MATCHES "aarch64|arm64|armv8")
 		add_compile_options(-march=armv8-a+simd)
 	else()
 		# x86: SSE instructions available, but FPU math mode varies by STREFLOP mode
