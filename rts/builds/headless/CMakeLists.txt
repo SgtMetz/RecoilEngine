@@ -87,24 +87,8 @@ target_link_libraries(engine-headless no-sound ${engineHeadlessLibraries} GameHe
 set_target_properties(engine-headless PROPERTIES ENABLE_EXPORTS TRUE)
 
 if (IS_WASM_BUILD)
-	# Phase 1 runs under Node: NODERAWFS gives direct access to the host filesystem
-	# (game/map archives, replays). Browser delivery (MEMFS/OPFS, COOP/COEP) is phase 2.
-	set(RECOIL_WASM_PTHREAD_POOL_SIZE 8 CACHE STRING "WASM: number of pre-spawned pthread workers")
-	target_link_options(engine-headless PRIVATE
-		-pthread
-		-fwasm-exceptions
-		-sSUPPORT_LONGJMP=wasm
-		-sENVIRONMENT=node,worker
-		-sNODERAWFS=1
-		-sALLOW_MEMORY_GROWTH=1
-		-sINITIAL_MEMORY=256MB
-		-sMAXIMUM_MEMORY=4GB
-		-sSTACK_SIZE=8MB
-		-sDEFAULT_PTHREAD_STACK_SIZE=4MB
-		-sPTHREAD_POOL_SIZE=${RECOIL_WASM_PTHREAD_POOL_SIZE}
-		-sEXIT_RUNTIME=1
-		-sASSERTIONS=1
-	)
+	# see RECOIL_WASM_NODE_LINK_OPTIONS in the top-level CMakeLists.txt
+	target_link_options(engine-headless PRIVATE ${RECOIL_WASM_NODE_LINK_OPTIONS})
 endif ()
 
 if(MSVC)

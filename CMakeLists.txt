@@ -524,6 +524,28 @@ elseif (IS_WASM_BUILD)
 	# -pthread on C too: every object linked into the threaded engine needs atomics/bulk-memory.
 	set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -msimd128 -msse -msse2 -ffp-contract=off -fwasm-exceptions -sSUPPORT_LONGJMP=wasm")
 	set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -msimd128 -ffp-contract=off -pthread -sSUPPORT_LONGJMP=wasm")
+
+	# Link options shared by engine-headless and the unit tests (phase 1 runs under Node).
+	# NODERAWFS gives direct access to the host filesystem (game/map archives, replays);
+	# the pre-js copies process.env into the WASM environment (SPRING_DATADIR, ...).
+	# Browser delivery (MEMFS/OPFS, COOP/COEP) is phase 2.
+	set(RECOIL_WASM_PTHREAD_POOL_SIZE 8 CACHE STRING "WASM: number of pre-spawned pthread workers")
+	set(RECOIL_WASM_NODE_LINK_OPTIONS
+		-pthread
+		-fwasm-exceptions
+		-sSUPPORT_LONGJMP=wasm
+		-sENVIRONMENT=node,worker
+		-sNODERAWFS=1
+		-sALLOW_MEMORY_GROWTH=1
+		-sINITIAL_MEMORY=256MB
+		-sMAXIMUM_MEMORY=4GB
+		-sSTACK_SIZE=8MB
+		-sDEFAULT_PTHREAD_STACK_SIZE=4MB
+		-sPTHREAD_POOL_SIZE=${RECOIL_WASM_PTHREAD_POOL_SIZE}
+		-sEXIT_RUNTIME=1
+		-sASSERTIONS=1
+		"SHELL:--pre-js ${CMAKE_SOURCE_DIR}/rts/lib/wasm-stubs/node-env-pre.js"
+	)
 elseif ("${CMAKE_CXX_COMPILER_ID}" STREQUAL "Clang" OR "${CMAKE_CXX_COMPILER_ID}" STREQUAL "AppleClang")
 	# Clang on ARM64: no SSE flags needed, use armv8-a with NEON SIMD
 	if (IS_ARM64_BUILD)

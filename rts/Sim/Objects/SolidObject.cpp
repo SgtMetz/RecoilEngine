@@ -50,6 +50,7 @@ CR_REG_METADATA(CSolidObject,
 
 	CR_MEMBER(team),
 	CR_MEMBER(allyteam),
+	CR_MEMBER(paletteIndex),
 
 	CR_MEMBER(creationFrame),
 
@@ -77,6 +78,7 @@ CR_REG_METADATA(CSolidObject,
 
 	CR_MEMBER(drawPos),
 	CR_MEMBER(drawMidPos),
+	CR_MEMBER(objectUsable),
 
 	CR_MEMBER(buildFacing),
 	CR_MEMBER(modParams),

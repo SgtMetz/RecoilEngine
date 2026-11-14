@@ -9,9 +9,9 @@ if    (UNIX AND (NOT APPLE) AND (NOT MINGW) AND (NOT IS_WASM_BUILD))
 	if    (PREFER_STATIC_LIBS AND NOT EXISTS "${REALTIME_LIBRARY}")
 		message(FATAL_ERROR "librt.[so|a] not found! Needed by std::chrono when statically linked!")
 	endif (PREFER_STATIC_LIBS AND NOT EXISTS "${REALTIME_LIBRARY}")
-else  (UNIX AND (NOT APPLE) AND (NOT MINGW))
+else  ()
 	set(REALTIME_LIBRARY "")
-endif (UNIX AND (NOT APPLE) AND (NOT MINGW))
+endif ()
 
 ADD_SUBDIRECTORY(lib/catch2)
 # Engine-wide -fsingle-precision-constant (gcc) makes `0.` a float, which
@@ -86,13 +86,19 @@ macro (add_spring_test target sources libraries flags)
 	add_executable(test_${target} ${sources})
 	target_link_libraries(test_${target} ${libraries} ${test_common_libraries})
 	set_target_properties(test_${target} PROPERTIES COMPILE_FLAGS "${flags}")
+	if (IS_WASM_BUILD)
+		# ctest runs test_*.js through CMAKE_CROSSCOMPILING_EMULATOR (node)
+		target_link_options(test_${target} PRIVATE ${RECOIL_WASM_NODE_LINK_OPTIONS})
+	endif ()
 	#install(TARGETS test_${target} DESTINATION ${BINDIR})
 endmacro()
 
 ################################################################################
 ### UDPListener
 # disabled for travis: https://springrts.com/mantis/view.php?id=5014
-if(NOT DEFINED ENV{CI})
+# WASM: Emscripten has no real UDP (its sockets are WebSocket-backed), and local
+# games/replays never open the UDP listener.
+if(NOT DEFINED ENV{CI} AND NOT IS_WASM_BUILD)
 	set(test_name UDPListener)
 	set(test_src
 		"${CMAKE_CURRENT_SOURCE_DIR}/engine/System/Net/TestUDPListener.cpp"
@@ -360,7 +366,12 @@ endif()
 	if    (NOT NO_CREG)
 ################################################################################
 ### CREG
-		add_test(NAME testCreg COMMAND ${CMAKE_BINARY_DIR}/spring-headless${CMAKE_EXECUTABLE_SUFFIX} --test-creg)
+		if (IS_WASM_BUILD)
+			# target name, so ctest runs spring-headless.js through the emulator (node)
+			add_test(NAME testCreg COMMAND engine-headless --test-creg)
+		else ()
+			add_test(NAME testCreg COMMAND ${CMAKE_BINARY_DIR}/spring-headless${CMAKE_EXECUTABLE_SUFFIX} --test-creg)
+		endif ()
 
 ### CREG LoadSave
 		set(test_name LoadSave)
@@ -404,6 +415,9 @@ endif()
 	add_spring_test(${test_name} "${test_src}" "${test_libs}" "${test_flags}")
 	target_include_directories(test_${test_name} PRIVATE ${ENGINE_SOURCE_DIR}/lib/)
 	add_dependencies(test_${test_name} springcontent.sdz)
+	# point unitsync at the build dir's base/ content; it doesn't find it on its own
+	# from an uninstalled build (on WASM this also exercises the node-env pre-js)
+	set_tests_properties(test${test_name} PROPERTIES ENVIRONMENT "SPRING_DATADIR=${CMAKE_BINARY_DIR}")
 
 ################################################################################
 ### ThreadPool
@@ -420,13 +434,15 @@ endif()
 		)
 	if (WIN32)
 		list(APPEND test_src "${ENGINE_SOURCE_DIR}/System/Platform/Win/CpuTopology.cpp")
+	elseif (EMSCRIPTEN)
+		list(APPEND test_src "${ENGINE_SOURCE_DIR}/System/Platform/Emscripten/CpuTopology.cpp")
 	else (WIN32)
 		list(APPEND test_src "${ENGINE_SOURCE_DIR}/System/Platform/Linux/CpuTopology.cpp")
 	endif (WIN32)
 	set(test_libs
 			${WINMM_LIBRARY}
 		)
-	if ("${CMAKE_CXX_COMPILER_ID}" STREQUAL "Clang")
+	if ("${CMAKE_CXX_COMPILER_ID}" STREQUAL "Clang" AND NOT EMSCRIPTEN)
 		list(APPEND test_libs atomic)
 	endif()
 	add_spring_test(${test_name} "${test_src}" "${test_libs}" "-DTHREADPOOL -DUNITSYNC")
