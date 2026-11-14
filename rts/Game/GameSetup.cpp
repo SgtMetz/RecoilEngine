@@ -670,6 +670,12 @@ bool CGameSetup::Init(const std::string& buf)
 
 	file.GetDef(onlyLocal, (archiveScanner->GetArchiveData(modName).GetOnlyLocal() ? "1" : "0"), "GAME\\OnlyLocal");
 	onlyLocal |= forceOnlyLocal;
+#ifdef __EMSCRIPTEN__
+	// no UDP on WASM (Emscripten sockets are WebSocket-backed and cannot even
+	// resolve "localhost" under Node); local games and replays never need the
+	// listener, so never open it
+	onlyLocal = true;
+#endif
 
 	return true;
 }

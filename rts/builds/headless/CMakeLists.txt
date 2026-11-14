@@ -49,6 +49,7 @@ if (NOT IS_WASM_BUILD)
 else ()
 	# WASM: no libcurl; content is preloaded into the VFS. Every download request fails cleanly.
 	add_library(prd-wasm-stub STATIC "${ENGINE_SRC_ROOT_DIR}/lib/wasm-stubs/prdownloader/prd_stub.cpp")
+	target_link_libraries(prd-wasm-stub PRIVATE pr-md5 prd::base64)
 	list(APPEND engineHeadlessLibraries prd-wasm-stub)
 endif ()
 list(APPEND engineHeadlessLibraries RmlUi::Core)

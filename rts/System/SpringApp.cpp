@@ -22,6 +22,10 @@
 #undef GrayScale
 #endif
 
+#ifdef __EMSCRIPTEN__
+#include <emscripten/threading.h>
+#endif
+
 
 #include "Rendering/GL/myGL.h"
 #include "System/SpringApp.h"
@@ -927,6 +931,13 @@ int SpringApp::Run()
 			spring::exitCode = spring::EXIT_CODE_NOINIT;
 
 		while (!gu->globalQuit) {
+			#ifdef __EMSCRIPTEN__
+			// other pthreads proxy their stdio and (NODERAWFS) file-system calls to
+			// the main thread; that queue is only drained while main blocks in a wait,
+			// which this busy loop never does, so the pregame/loading threads would
+			// hang on their first LOG or file read
+			emscripten_main_thread_process_queued_calls();
+			#endif
 			Watchdog::ClearTimer(WDT_MAIN);
 			input.PushEvents();
 

@@ -285,10 +285,13 @@ CGame::CGame(const std::string& mapFileName, const std::string& modFileName, ILo
 	CCategoryHandler::CreateInstance();
 }
 
+void LogDemoSyncSummary(); // NetCommands.cpp
+
 CGame::~CGame()
 {
 	ENTER_SYNCED_CODE();
 	LOG("[Game::%s][1]", __func__);
+	LogDemoSyncSummary();
 
 	RmlGui::Shutdown();
 	helper->Kill();

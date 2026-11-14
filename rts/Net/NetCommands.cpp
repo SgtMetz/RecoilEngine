@@ -48,6 +48,19 @@ LOG_REGISTER_SECTION_GLOBAL(LOG_SECTION_NET)
 
 static spring::unordered_map<int32_t, uint32_t> localSyncChecksums;
 
+// running totals of demo sync-response checks, so a clean replay can be told
+// apart from one that carries no echoed checksums at all (silence proves nothing)
+static uint32_t numDemoSyncMatches = 0;
+static uint32_t numDemoSyncMismatches = 0;
+
+void LogDemoSyncSummary()
+{
+	if (numDemoSyncMatches == 0 && numDemoSyncMismatches == 0)
+		return;
+
+	LOG("[DemoSync] summary: %u demo checksums matched, %u mismatched", numDemoSyncMatches, numDemoSyncMismatches);
+}
+
 
 void CGame::AddTraffic(int playerID, int packetCode, int length)
 {
@@ -661,7 +674,14 @@ void CGame::ClientReadNet()
 					// frame in the original game (in case of a demo)
 					if (playerNum == gu->myPlayerNum)
 						break;
-					if (checkSum == ourCheckSum)
+
+					const bool syncMatch = (checkSum == ourCheckSum);
+					(syncMatch ? numDemoSyncMatches : numDemoSyncMismatches) += 1;
+
+					if ((frameNum % (GAME_SPEED * 60)) == 0)
+						LOG("[DemoSync] frame %d: %u demo checksums matched, %u mismatched", frameNum, numDemoSyncMatches, numDemoSyncMismatches);
+
+					if (syncMatch)
 						break;
 
 					const CPlayer* player = playerHandler.Player(playerNum);

@@ -529,7 +529,10 @@ elseif (IS_WASM_BUILD)
 	# NODERAWFS gives direct access to the host filesystem (game/map archives, replays);
 	# the pre-js copies process.env into the WASM environment (SPRING_DATADIR, ...).
 	# Browser delivery (MEMFS/OPFS, COOP/COEP) is phase 2.
-	set(RECOIL_WASM_PTHREAD_POOL_SIZE 8 CACHE STRING "WASM: number of pre-spawned pthread workers")
+	# a game runs ~16 threads (11 pool workers on 12 cores, watchdog, pregame/loading,
+	# game server); a thread beyond the pool needs a new Web Worker, which only starts
+	# once the main thread yields to the JS event loop, so keep the pool large enough
+	set(RECOIL_WASM_PTHREAD_POOL_SIZE 32 CACHE STRING "WASM: number of pre-spawned pthread workers")
 	set(RECOIL_WASM_NODE_LINK_OPTIONS
 		-pthread
 		-fwasm-exceptions
