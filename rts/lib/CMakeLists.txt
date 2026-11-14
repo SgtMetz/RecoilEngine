@@ -193,6 +193,16 @@ endif()
 # correct version as picked by the engine.
 # !!! If you change freetype resolution here, change it also in rts/builds/legacy
 find_freetype_hack() # hack to find different named freetype.dll
+if (IS_WASM_BUILD)
+	# WASM: link the Emscripten freetype port via -sUSE_FREETYPE so emcc picks the library
+	# variant matching the link settings (wasm setjmp/longjmp + wasm exceptions), instead
+	# of the fixed default libfreetype.a that FindFreetype would locate in the sysroot.
+	# FindFreetype (here and in RmlUi) leaves an existing Freetype::Freetype target alone.
+	add_library(Freetype::Freetype INTERFACE IMPORTED GLOBAL)
+	set_target_properties(Freetype::Freetype PROPERTIES
+		INTERFACE_COMPILE_OPTIONS "-sUSE_FREETYPE=1"
+		INTERFACE_LINK_OPTIONS "-sUSE_FREETYPE=1")
+endif ()
 find_package_static(Freetype 2.8.1 REQUIRED)
 
 # lunasvg does not expect number constants to be floats, so we undo this cmake flag for its compilation

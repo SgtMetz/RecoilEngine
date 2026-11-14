@@ -27,8 +27,8 @@ void good_fpu_init() {
 
 #else
 
-#if !defined(STREFLOP_SSE) && !defined(STREFLOP_NEON) && !defined(STREFLOP_X87)
-	#error "streflop FP-math mode must be either SSE or NEON or X87"
+#if !defined(STREFLOP_SSE) && !defined(STREFLOP_NEON) && !defined(STREFLOP_X87) && !defined(STREFLOP_WASM)
+	#error "streflop FP-math mode must be either SSE or NEON or X87 or WASM"
 #endif
 
 
@@ -151,6 +151,8 @@ void good_fpu_init()
 	LOG("[%s][STREFLOP_NEON]", __func__);
 	#elif (defined(STREFLOP_X87))
 	LOG("[%s][STREFLOP_X87]", __func__);
+	#elif (defined(STREFLOP_WASM))
+	LOG("[%s][STREFLOP_WASM]", __func__);
 	#else
 	#error
 	#endif
@@ -180,6 +182,9 @@ void good_fpu_init()
 	LOG_L(L_WARNING, "\tStreflop floating-point math is set to X87 mode");
 	LOG_L(L_WARNING, "\tThis may cause desyncs during multi-player games");
 	LOG_L(L_WARNING, "\tYour CPU is %s SSE-capable; consider %s", (sseFlag == 0)? "not": "", (sseFlag == 1)? "recompiling": "upgrading");
+	#elif (defined(STREFLOP_WASM))
+	LOG("\tStreflop WASM mode: IEEE-754 round-to-nearest, denormals preserved (fixed by the WebAssembly spec)");
+	(void) sseFlag;
 	#else
 	#error
 	#endif

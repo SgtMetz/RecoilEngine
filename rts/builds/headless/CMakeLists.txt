@@ -45,8 +45,11 @@ list(APPEND engineHeadlessLibraries no-sound)
 list(APPEND engineHeadlessLibraries engineSim)
 list(APPEND engineHeadlessLibraries squish)
 if (NOT IS_WASM_BUILD)
-	# WASM: no libcurl; content is preloaded into the VFS. LuaVFSDownload needs a stub (M2).
 	list(APPEND engineHeadlessLibraries pr-downloader)
+else ()
+	# WASM: no libcurl; content is preloaded into the VFS. Every download request fails cleanly.
+	add_library(prd-wasm-stub STATIC "${ENGINE_SRC_ROOT_DIR}/lib/wasm-stubs/prdownloader/prd_stub.cpp")
+	list(APPEND engineHeadlessLibraries prd-wasm-stub)
 endif ()
 list(APPEND engineHeadlessLibraries RmlUi::Core)
 list(APPEND engineHeadlessLibraries RmlUi::Debugger)
@@ -82,6 +85,27 @@ target_link_libraries(engine-headless no-sound ${engineHeadlessLibraries} GameHe
 
 # Export symbols for plugin access (replaces CMP0065 OLD behavior)
 set_target_properties(engine-headless PROPERTIES ENABLE_EXPORTS TRUE)
+
+if (IS_WASM_BUILD)
+	# Phase 1 runs under Node: NODERAWFS gives direct access to the host filesystem
+	# (game/map archives, replays). Browser delivery (MEMFS/OPFS, COOP/COEP) is phase 2.
+	set(RECOIL_WASM_PTHREAD_POOL_SIZE 8 CACHE STRING "WASM: number of pre-spawned pthread workers")
+	target_link_options(engine-headless PRIVATE
+		-pthread
+		-fwasm-exceptions
+		-sSUPPORT_LONGJMP=wasm
+		-sENVIRONMENT=node,worker
+		-sNODERAWFS=1
+		-sALLOW_MEMORY_GROWTH=1
+		-sINITIAL_MEMORY=256MB
+		-sMAXIMUM_MEMORY=4GB
+		-sSTACK_SIZE=8MB
+		-sDEFAULT_PTHREAD_STACK_SIZE=4MB
+		-sPTHREAD_POOL_SIZE=${RECOIL_WASM_PTHREAD_POOL_SIZE}
+		-sEXIT_RUNTIME=1
+		-sASSERTIONS=1
+	)
+endif ()
 
 if(MSVC)
     target_link_libraries(engine-headless engine-natvis)

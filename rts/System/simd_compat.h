@@ -16,6 +16,11 @@
     #undef FE_DOWNWARD
     #undef FE_UPWARD
     #undef FE_TOWARDZERO
+#elif defined(__EMSCRIPTEN__)
+    // Emscripten lowers SSE/SSE2 intrinsics to WASM SIMD128 (-msimd128 -msse -msse2).
+    // The x86 umbrella headers (x86intrin/immintrin) are x86-only, so include just these.
+    #include <xmmintrin.h>
+    #include <emmintrin.h>
 #else
     #ifdef _MSC_VER
         #include <intrin.h>   // MSVC umbrella

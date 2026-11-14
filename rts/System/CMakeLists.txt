@@ -165,6 +165,21 @@ set(sources_engine_System_Threading_Linux
 		"${CMAKE_CURRENT_SOURCE_DIR}/Platform/Linux/ThreadSupport.cpp"
 		"${CMAKE_CURRENT_SOURCE_DIR}/Platform/Linux/SoLib.cpp"
 	)
+# WASM port: Emscripten presents as UNIX, but has no signals/ucontext unwinding,
+# futex(2), /proc or /sys topology, so those four Linux files are replaced.
+set(sources_engine_System_Platform_Emscripten
+		"${CMAKE_CURRENT_SOURCE_DIR}/Platform/Emscripten/CrashHandler.cpp"
+		"${CMAKE_CURRENT_SOURCE_DIR}/Platform/Linux/Hardware.cpp"
+		"${CMAKE_CURRENT_SOURCE_DIR}/Platform/Linux/SoLib.cpp"
+		"${CMAKE_CURRENT_SOURCE_DIR}/Platform/Linux/MessageBox.cpp"
+		"${CMAKE_CURRENT_SOURCE_DIR}/Platform/Linux/WindowManagerHelper.cpp"
+	)
+set(sources_engine_System_Threading_Emscripten
+		"${CMAKE_CURRENT_SOURCE_DIR}/Platform/Emscripten/CpuTopology.cpp"
+		"${CMAKE_CURRENT_SOURCE_DIR}/Platform/Emscripten/Futex.cpp"
+		"${CMAKE_CURRENT_SOURCE_DIR}/Platform/Emscripten/ThreadSupport.cpp"
+		"${CMAKE_CURRENT_SOURCE_DIR}/Platform/Linux/SoLib.cpp"
+	)
 set(sources_engine_System_Threading_Windows
 		"${CMAKE_CURRENT_SOURCE_DIR}/Platform/Win/CpuTopology.cpp"
 		"${CMAKE_CURRENT_SOURCE_DIR}/Platform/Win/CriticalSection.cpp"
@@ -208,6 +223,13 @@ if     (APPLE)
 	make_global_var(sources_engine_System
 			${sources_engine_System}
 			${sources_engine_System_Platform_Mac}
+			${sources_engine_System_Threading}
+		)
+elseif (EMSCRIPTEN)
+	make_global_var(sources_engine_System_Threading ${sources_engine_System_Threading} ${sources_engine_System_Threading_Emscripten})
+	make_global_var(sources_engine_System
+			${sources_engine_System}
+			${sources_engine_System_Platform_Emscripten}
 			${sources_engine_System_Threading}
 		)
 elseif (UNIX)

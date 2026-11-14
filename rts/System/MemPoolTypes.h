@@ -21,6 +21,12 @@
 #include "System/Platform/Threading.h"
 #include "System/Log/ILog.h"
 
+// musl (Emscripten) <limits.h> defines PAGE_SIZE as a macro, which clobbers the
+// pools' static PAGE_SIZE() member functions below. Nothing in the engine uses the macro.
+#ifdef PAGE_SIZE
+#undef PAGE_SIZE
+#endif
+
 template<uint32_t NumBuckets, size_t BucketSize> struct PassThroughPool {
 public:
 	PassThroughPool() {

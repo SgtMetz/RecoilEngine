@@ -3,6 +3,10 @@
 #ifndef ASS_IO_H
 #define ASS_IO_H
 
+// assimp's vector/matrix .inl files use std::abs(float) but rely on <cmath> arriving
+// transitively (true for libstdc++, not for Emscripten's libc++)
+#include <cmath>
+
 // assimp public headers modify #pragma pack across includes (clang -Wpragma-pack)
 #ifdef __clang__
 #pragma clang diagnostic push

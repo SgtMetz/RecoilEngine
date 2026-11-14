@@ -223,6 +223,12 @@ namespace Platform
 			procExeFilePath = buf;
 
 
+		#elif defined(__EMSCRIPTEN__)
+		// WASM port: there is no executable file. Use a fixed path in the virtual FS;
+		// the engine's own data (base/) is expected to be mounted next to it, at /recoil.
+		procExeFilePath = "/recoil/spring-headless";
+
+
 		#else
 		#error implement this
 		#endif
@@ -412,6 +418,10 @@ namespace Platform
 		return "x86_64";
 		#elif defined(__aarch64__) || defined(_M_ARM64)
 		return "arm64";
+		#elif defined(__wasm64__)
+		return "wasm64";
+		#elif defined(__wasm32__)
+		return "wasm32";
 		#else
 		#error "Unsupported architecture"
 		#endif
@@ -749,10 +759,11 @@ namespace Platform
 		return (GetMacType(macAddr, 0), macAddr);
 	}
 
-	#elif defined(__APPLE__)
+	#elif defined(__APPLE__) || defined(__EMSCRIPTEN__)
 
 	std::array<uint8_t, 6> GetRawMacAddr() {
 		// TODO: http://lists.freebsd.org/pipermail/freebsd-hackers/2004-June/007415.html
+		// WASM: no network interfaces are visible from WebAssembly
 		return {{0, 0, 0, 0, 0, 0}};
 	}
 

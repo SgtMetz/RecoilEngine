@@ -19,7 +19,11 @@ ThreadAffinityGuard::ThreadAffinityGuard() : affinitySaved(false) {
 		LOG_L(L_WARNING, "GetThreadAffinityMask failed with error code: %lu", GetLastError());
 	}
 #else
+#ifdef __EMSCRIPTEN__
+	tid = 0;  // no gettid syscall on WASM; 0 = calling thread for sched_*affinity
+#else
 	tid = syscall(SYS_gettid);  // Get thread ID
+#endif
 	CPU_ZERO(&savedAffinity);
 	if (sched_getaffinity(tid, sizeof(cpu_set_t), &savedAffinity) == 0) {
 		affinitySaved = true;

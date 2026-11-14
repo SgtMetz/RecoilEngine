@@ -30,6 +30,10 @@ if(PREFER_STATIC_LIBS OR MINGW)
 	endif (HAVE_STATIC_LIBSTDCXX_FLAG)
 endif()
 if (IS_WASM_BUILD)
+	# WASM: the flags were cleared above, but everything linked into the threaded engine
+	# must be built with atomics/bulk-memory (-pthread), or wasm-ld rejects --shared-memory.
+	set(CMAKE_CXX_FLAGS "-pthread -fwasm-exceptions -sSUPPORT_LONGJMP=wasm")
+	set(CMAKE_C_FLAGS "-pthread -sSUPPORT_LONGJMP=wasm")
 	# WASM: no libcurl. The engine only needs prd::base64 and prd::jsoncpp from pr-downloader;
 	# a placeholder target lets the submodule configure unmodified. The pr-downloader
 	# library/executable themselves are not built for WASM.

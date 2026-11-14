@@ -317,12 +317,13 @@ find_package(SDL2 MODULE)
 
 if    (IS_WASM_BUILD)
 	# WASM: use a DevIL built for Emscripten if one is on CMAKE_PREFIX_PATH,
-	# else a placeholder target (Bitmap.cpp then needs a NO_DEVIL path, see M2).
+	# else a placeholder target plus a stub <IL/il.h> where every load/save fails.
 	find_package(DevIL 1.8.0)
 	if (NOT DevIL_FOUND)
 		message(WARNING "WASM: DevIL not found, image loading will be stubbed (WASM_NO_DEVIL)")
 		add_library(DevIL::IL INTERFACE IMPORTED)
 		add_compile_definitions(WASM_NO_DEVIL)
+		include_directories(SYSTEM "${CMAKE_SOURCE_DIR}/rts/lib/wasm-stubs/devil")
 		set(DevIL_FOUND TRUE)
 	endif ()
 else  ()
@@ -518,8 +519,11 @@ elseif (MSVC)
 	add_definitions(-D_SILENCE_STDEXT_HASH_DEPRECATION_WARNINGS)
 elseif (IS_WASM_BUILD)
 	# Emscripten: SSE/SSE2 intrinsics are lowered to WASM SIMD128. No FMA fusion (sync).
-	set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -msimd128 -msse -msse2 -ffp-contract=off")
-	set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -msimd128 -ffp-contract=off")
+	# -fwasm-exceptions: the engine relies on C++ exceptions; Emscripten's default aborts on throw.
+	# -sSUPPORT_LONGJMP=wasm: required alongside wasm exceptions (freetype, plutovg use setjmp).
+	# -pthread on C too: every object linked into the threaded engine needs atomics/bulk-memory.
+	set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -msimd128 -msse -msse2 -ffp-contract=off -fwasm-exceptions -sSUPPORT_LONGJMP=wasm")
+	set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -msimd128 -ffp-contract=off -pthread -sSUPPORT_LONGJMP=wasm")
 elseif ("${CMAKE_CXX_COMPILER_ID}" STREQUAL "Clang" OR "${CMAKE_CXX_COMPILER_ID}" STREQUAL "AppleClang")
 	# Clang on ARM64: no SSE flags needed, use armv8-a with NEON SIMD
 	if (IS_ARM64_BUILD)

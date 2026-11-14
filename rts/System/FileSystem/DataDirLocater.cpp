@@ -17,6 +17,9 @@
 	#ifndef SHGFP_TYPE_CURRENT
 		#define SHGFP_TYPE_CURRENT 0
 	#endif
+#elif defined(__EMSCRIPTEN__)
+	#include <cctype>
+	#include <cstdlib>
 #else
 	#include <wordexp.h>
 #endif
@@ -140,6 +143,36 @@ std::string DataDirLocater::SubstEnvVars(const std::string& in) const
 		return "";
 
 	out = nowide::narrow(out_ws.c_str());
+#elif defined(__EMSCRIPTEN__)
+	// WASM: musl's wordexp() is not available in Emscripten. Expand a leading ~ and
+	// $VAR / ${VAR} from the environment, which covers how data-dir paths are written.
+	size_t i = 0;
+	if (!in.empty() && in[0] == '~' && (in.size() == 1 || in[1] == '/')) {
+		const char* home = getenv("HOME");
+		out = (home != nullptr) ? home : "";
+		i = 1;
+	}
+	while (i < in.size()) {
+		if (in[i] != '$') {
+			out += in[i++];
+			continue;
+		}
+		size_t start = i + 1, end;
+		const bool braced = (start < in.size() && in[start] == '{');
+		if (braced) {
+			start += 1;
+			end = in.find('}', start);
+			if (end == std::string::npos) { out += in.substr(i); break; }
+		} else {
+			end = start;
+			while (end < in.size() && (isalnum((unsigned char)in[end]) || in[end] == '_'))
+				++end;
+		}
+		const char* val = getenv(in.substr(start, end - start).c_str());
+		if (val != nullptr)
+			out += val;
+		i = braced ? end + 1 : end;
+	}
 #else
 	std::string previous = in;
 

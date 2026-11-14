@@ -17,13 +17,13 @@
 #endif /* !defined __cplusplus && !defined bool */
 
 /* define if we have a X11 environment (:= linux/freebsd) */
-#if !defined(__APPLE__) && !defined(_WIN32)
+#if !defined(__APPLE__) && !defined(_WIN32) && !defined(__EMSCRIPTEN__)
 	//FIXME move this check to cmake, which has FindX11.cmake?
 	#define _X11
 #endif
 
 
-#if (defined(__alpha__) || defined(__arm__) || defined(__aarch64__) || defined(__mips__) || defined(__powerpc__) || defined(__sparc__) || defined(__m68k__) || defined(__ia64__))
+#if (defined(__wasm__) || defined(__alpha__) || defined(__arm__) || defined(__aarch64__) || defined(__mips__) || defined(__powerpc__) || defined(__sparc__) || defined(__m68k__) || defined(__ia64__))
 #define __is_x86_arch__ 0
 #elif (defined(__i386__) || defined(__x86_64__) || defined(__amd64__) || defined(_M_AMD64) || defined(_M_IX86) || defined(_M_X64))
 #define __is_x86_arch__ 1

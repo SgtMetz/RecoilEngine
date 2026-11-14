@@ -4,6 +4,12 @@
 #include <string>
 #include <utility>
 
+// musl (Emscripten) <netinet/tcp.h> defines TCP_LISTEN as a TCP-state macro, which
+// would clobber CLuaSocketRestrictions::TCP_LISTEN below. luasocket never uses the state.
+#ifdef TCP_LISTEN
+#undef TCP_LISTEN
+#endif
+
 class TSocketRule {
 public:
 	std::string hostname;

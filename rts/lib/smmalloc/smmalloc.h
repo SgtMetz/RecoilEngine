@@ -24,9 +24,11 @@
 #include <algorithm>
 #include <array>
 #include <atomic>
+#include <cstdlib>
 #include <cstring>
 #include <initializer_list>
 #include <memory>
+#include <type_traits>
 #include <stdint.h>
 
 //#define SMMALLOC_STATS_SUPPORT

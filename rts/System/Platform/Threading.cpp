@@ -21,6 +21,11 @@
 #elif defined(_WIN32)
 	#include <windows.h>
 	#include "System/Platform/Win/DllLib.h"
+#elif defined(__EMSCRIPTEN__)
+	#include <unistd.h>
+	#include <sched.h>
+	#include <pthread.h>
+	#include <emscripten/threading.h>
 #else
 	#include <unistd.h>
 	#if defined(__USE_GNU)
@@ -230,6 +235,9 @@ namespace Threading {
 #elif defined(__aarch64__) || defined(__arm__) || defined(_M_ARM64)
 		// Apple Silicon CCDs are grouped into a minimum of 4 cores with atrocious cross-CCD latency, so avoid
 		// multiple CCDs there as well.
+		constexpr uint32_t threadCountThreshold = 4;
+#elif defined(__wasm__)
+		// WebAssembly: no cache topology available; workers are Web Workers sharing one memory.
 		constexpr uint32_t threadCountThreshold = 4;
 #else
 		#error "Unsupported architecture"
@@ -513,6 +521,9 @@ namespace Threading {
 	#ifndef _WIN32
 	#ifdef __APPLE__
 		pthread_setname_np(newname.c_str());
+	#elif defined(__EMSCRIPTEN__)
+		// shows up as the Web Worker / thread name in browser devtools
+		emscripten_set_thread_name(pthread_self(), newname.c_str());
 	#else
 		prctl(PR_SET_NAME, newname.c_str(), 0, 0, 0);
 	#endif
