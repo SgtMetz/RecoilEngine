@@ -528,7 +528,7 @@ elseif (IS_WASM_BUILD)
 	# Link options shared by engine-headless and the unit tests (phase 1 runs under Node).
 	# NODERAWFS gives direct access to the host filesystem (game/map archives, replays);
 	# the pre-js copies process.env into the WASM environment (SPRING_DATADIR, ...).
-	# Browser delivery (MEMFS/OPFS, COOP/COEP) is phase 2.
+	# The browser variant is RECOIL_WASM_WEB_LINK_OPTIONS below.
 	# a game runs ~16 threads (11 pool workers on 12 cores, watchdog, pregame/loading,
 	# game server); a thread beyond the pool needs a new Web Worker, which only starts
 	# once the main thread yields to the JS event loop, so keep the pool large enough
@@ -548,6 +548,34 @@ elseif (IS_WASM_BUILD)
 		-sEXIT_RUNTIME=1
 		-sASSERTIONS=1
 		"SHELL:--pre-js ${CMAKE_SOURCE_DIR}/rts/lib/wasm-stubs/node-env-pre.js"
+	)
+
+	# Browser variant (phase 2), used by the extra engine-headless-web target
+	# (spring-headless-web.js); the Node target and the unit tests are unchanged.
+	# PROXY_TO_PTHREAD: main() and SpringApp's busy main loop run in a worker, so the
+	#   page's main thread stays free to service proxied calls and spawn workers.
+	# WASMFS: game content lives in OPFS (mounted at /recoil by Platform/Emscripten/WebFS.cpp)
+	#   and is read outside the wasm heap; the page fills OPFS before starting the engine.
+	# The page sets Module.arguments and Module.recoilEnv (copied into ENV by web-pre.js);
+	# wasmMemory is exported so it can report the heap size.
+	option(RECOIL_WASM_BUILD_WEB "WASM: also build the browser target engine-headless-web" ON)
+	set(RECOIL_WASM_WEB_LINK_OPTIONS
+		-pthread
+		-fwasm-exceptions
+		-sSUPPORT_LONGJMP=wasm
+		-sENVIRONMENT=web,worker
+		-sWASMFS=1
+		-sPROXY_TO_PTHREAD=1
+		-sALLOW_MEMORY_GROWTH=1
+		-sINITIAL_MEMORY=256MB
+		-sMAXIMUM_MEMORY=4GB
+		-sSTACK_SIZE=8MB
+		-sDEFAULT_PTHREAD_STACK_SIZE=4MB
+		-sPTHREAD_POOL_SIZE=${RECOIL_WASM_PTHREAD_POOL_SIZE}
+		-sEXIT_RUNTIME=1
+		-sASSERTIONS=1
+		-sEXPORTED_RUNTIME_METHODS=wasmMemory
+		"SHELL:--pre-js ${CMAKE_SOURCE_DIR}/rts/lib/wasm-stubs/web-pre.js"
 	)
 elseif ("${CMAKE_CXX_COMPILER_ID}" STREQUAL "Clang" OR "${CMAKE_CXX_COMPILER_ID}" STREQUAL "AppleClang")
 	# Clang on ARM64: no SSE flags needed, use armv8-a with NEON SIMD

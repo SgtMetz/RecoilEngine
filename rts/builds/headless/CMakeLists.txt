@@ -81,7 +81,15 @@ target_link_libraries(GameHeadless PRIVATE
 	fmt::fmt
 )
 ### Build the executable
-add_executable(engine-headless ${engineSources} ${ENGINE_ICON})
+if (NOT IS_WASM_BUILD)
+	add_executable(engine-headless ${engineSources} ${ENGINE_ICON})
+else ()
+	# WASM: compile the engine sources once and link them into two executables,
+	# engine-headless (Node, spring-headless.js) and engine-headless-web (browser)
+	add_library(engineHeadlessObjects OBJECT ${engineSources})
+	target_link_libraries(engineHeadlessObjects PRIVATE no-sound ${engineHeadlessLibraries} GameHeadless no-sound)
+	add_executable(engine-headless $<TARGET_OBJECTS:engineHeadlessObjects>)
+endif ()
 target_link_libraries(engine-headless no-sound ${engineHeadlessLibraries} GameHeadless no-sound)
 
 # Export symbols for plugin access (replaces CMP0065 OLD behavior)
@@ -90,6 +98,21 @@ set_target_properties(engine-headless PROPERTIES ENABLE_EXPORTS TRUE)
 if (IS_WASM_BUILD)
 	# see RECOIL_WASM_NODE_LINK_OPTIONS in the top-level CMakeLists.txt
 	target_link_options(engine-headless PRIVATE ${RECOIL_WASM_NODE_LINK_OPTIONS})
+	set_target_properties(engine-headless PROPERTIES LINK_DEPENDS "${ENGINE_SRC_ROOT_DIR}/lib/wasm-stubs/node-env-pre.js")
+
+	if (RECOIL_WASM_BUILD_WEB)
+		# see RECOIL_WASM_WEB_LINK_OPTIONS; WebFS.cpp mounts OPFS before the engine starts
+		add_executable(engine-headless-web
+			$<TARGET_OBJECTS:engineHeadlessObjects>
+			"${ENGINE_SRC_ROOT_DIR}/System/Platform/Emscripten/WebFS.cpp"
+		)
+		target_link_libraries(engine-headless-web no-sound ${engineHeadlessLibraries} GameHeadless no-sound)
+		target_link_options(engine-headless-web PRIVATE ${RECOIL_WASM_WEB_LINK_OPTIONS})
+		set_target_properties(engine-headless-web PROPERTIES
+			OUTPUT_NAME "spring-headless-web"
+			LINK_DEPENDS "${ENGINE_SRC_ROOT_DIR}/lib/wasm-stubs/web-pre.js"
+		)
+	endif ()
 endif ()
 
 if(MSVC)

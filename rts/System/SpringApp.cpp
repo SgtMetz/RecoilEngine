@@ -936,7 +936,10 @@ int SpringApp::Run()
 			// the main thread; that queue is only drained while main blocks in a wait,
 			// which this busy loop never does, so the pregame/loading threads would
 			// hang on their first LOG or file read
-			emscripten_main_thread_process_queued_calls();
+			// (browser build: main() runs in a worker via PROXY_TO_PTHREAD and the page's
+			// main thread services the queue from its event loop, so there is nothing to do)
+			if (emscripten_is_main_runtime_thread())
+				emscripten_main_thread_process_queued_calls();
 			#endif
 			Watchdog::ClearTimer(WDT_MAIN);
 			input.PushEvents();

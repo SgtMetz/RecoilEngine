@@ -80,8 +80,18 @@ static bool SetNvOptimusProfile(const std::string& processFileName)
  *
  * Main entry point function
  */
+#ifdef __EMSCRIPTEN__
+// defined only by the browser build (Platform/Emscripten/WebFS.cpp): mounts OPFS
+extern "C" void recoil_wasm_platform_init() __attribute__((weak));
+#endif
+
 int main(int argc, char* argv[])
 {
+#ifdef __EMSCRIPTEN__
+	if (recoil_wasm_platform_init != nullptr)
+		recoil_wasm_platform_init();
+#endif
+
 	nowide::args a(argc, argv); // Fix arguments - make them UTF-8
 
 // PROFILE builds exit on execv, HEADLESS does not use the GPU
