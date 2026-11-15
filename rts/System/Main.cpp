@@ -46,7 +46,13 @@ int Run(int argc, char* argv[])
 	Threading::SetMainThread();
 
 	LOG("%s: thread affinity %x", __func__, Threading::GetAffinity());
+#ifdef RECOIL_WEB_RENDER
+	// browser build with the renderer: Run() registers a requestAnimationFrame main
+	// loop and returns while the engine keeps running, so the app must outlive main()
+	SpringApp& app = *(new SpringApp(argc, argv));
+#else
 	SpringApp app(argc, argv);
+#endif
 	LOG("%s: thread affinity %x", __func__, Threading::GetAffinity());
 	return (app.Run());
 }

@@ -23,7 +23,13 @@
 #endif
 
 #ifdef __EMSCRIPTEN__
+#include <emscripten/emscripten.h>
+#include <emscripten/html5.h>
 #include <emscripten/threading.h>
+#endif
+#ifdef RECOIL_WEB_RENDER
+static double webLastIterationMs = 0.0;
+static bool webShutdownDone = false;
 #endif
 
 
@@ -325,7 +331,7 @@ bool SpringApp::Init()
 
 bool SpringApp::InitPlatformLibs()
 {
-#if !(defined(_WIN32) || defined(__APPLE__) || defined(HEADLESS)) || defined(__OpenBSD__)
+#if (!(defined(_WIN32) || defined(__APPLE__) || defined(HEADLESS)) || defined(__OpenBSD__)) && !defined(__EMSCRIPTEN__)
 	// MUST run before any other X11 call (including
 	// those by SDL) to make calls to X11 threadsafe
 	if (!XInitThreads()) {
@@ -930,31 +936,87 @@ int SpringApp::Run()
 		if ((gu->globalQuit = !Init() || gu->globalQuit))
 			spring::exitCode = spring::EXIT_CODE_NOINIT;
 
+		#ifdef RECOIL_WEB_RENDER
+		// browser build with the renderer: a frame drawn to the OffscreenCanvas only
+		// reaches the page when this worker returns to its event loop, so the loop body
+		// runs once per requestAnimationFrame callback instead of in a busy loop.
+		// Run() returns right away (the registered main loop keeps the runtime alive,
+		// and Main.cpp leaks the SpringApp); WebMainLoopIteration finishes the shutdown.
+		emscripten_set_main_loop_arg(&SpringApp::WebMainLoopIteration, this, 0, false);
+		// a hidden tab gets no animation frames at all, which would freeze the sim, the
+		// local server connection and loading; this timer keeps the loop turning slowly
+		// (worker timers are not throttled) whenever no frame callback arrived recently
+		emscripten_set_interval([](void* arg) {
+			if ((emscripten_get_now() - webLastIterationMs) > 100.0)
+				SpringApp::WebMainLoopIteration(arg);
+		}, 50.0, this);
+		return 0;
+		#endif
+
 		while (!gu->globalQuit) {
-			#ifdef __EMSCRIPTEN__
-			// other pthreads proxy their stdio and (NODERAWFS) file-system calls to
-			// the main thread; that queue is only drained while main blocks in a wait,
-			// which this busy loop never does, so the pregame/loading threads would
-			// hang on their first LOG or file read
-			// (browser build: main() runs in a worker via PROXY_TO_PTHREAD and the page's
-			// main thread services the queue from its event loop, so there is nothing to do)
-			if (emscripten_is_main_runtime_thread())
-				emscripten_main_thread_process_queued_calls();
-			#endif
-			Watchdog::ClearTimer(WDT_MAIN);
-			input.PushEvents();
-
-			// move to clear global data if a save is queued
-			ILoadSaveHandler::CreateSave(std::move(globalSaveFileData));
-
-			if (gu->globalReload) {
-				// copy; reloadScript is cleared by ResetState
-				Reload(gameSetup->reloadScript);
-			} else {
-				gu->globalQuit = (!Update() || gu->globalQuit);
-			}
+			RunIteration();
 		}
 	} CATCH_SPRING_ERRORS
+
+	return RunEnd();
+}
+
+
+#ifdef RECOIL_WEB_RENDER
+void SpringApp::WebMainLoopIteration(void* arg)
+{
+	SpringApp* app = static_cast<SpringApp*>(arg);
+
+	if (webShutdownDone)
+		return;
+	webLastIterationMs = emscripten_get_now();
+
+	if (!gu->globalQuit) {
+		try {
+			app->RunIteration();
+		} CATCH_SPRING_ERRORS
+
+		if (!gu->globalQuit)
+			return;
+	}
+
+	webShutdownDone = true;
+	emscripten_cancel_main_loop();
+	emscripten_force_exit(app->RunEnd());
+}
+#endif
+
+
+void SpringApp::RunIteration()
+{
+	#ifdef __EMSCRIPTEN__
+	// other pthreads proxy their stdio and (NODERAWFS) file-system calls to
+	// the main thread; that queue is only drained while main blocks in a wait,
+	// which this busy loop never does, so the pregame/loading threads would
+	// hang on their first LOG or file read
+	// (browser build: main() runs in a worker via PROXY_TO_PTHREAD and the page's
+	// main thread services the queue from its event loop, so there is nothing to do)
+	if (emscripten_is_main_runtime_thread())
+		emscripten_main_thread_process_queued_calls();
+	#endif
+	Watchdog::ClearTimer(WDT_MAIN);
+	input.PushEvents();
+
+	// move to clear global data if a save is queued
+	ILoadSaveHandler::CreateSave(std::move(globalSaveFileData));
+
+	if (gu->globalReload) {
+		// copy; reloadScript is cleared by ResetState
+		Reload(gameSetup->reloadScript);
+	} else {
+		gu->globalQuit = (!Update() || gu->globalQuit);
+	}
+}
+
+
+int SpringApp::RunEnd()
+{
+	const Threading::Error* threadError = Threading::GetThreadErrorC();
 
 	// no exception from main, check if some other thread interrupted our regular loop
 	// in case one did, ErrorMessageBox will call ::Kill and forcibly exit the process

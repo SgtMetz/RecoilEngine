@@ -40,6 +40,12 @@ public:
 	int Run();                                      //!< Run game loop
 
 private:
+	void RunIteration();                            //!< One pass of the main loop
+	int RunEnd();                                   //!< Shutdown after the main loop; returns the exit code
+	#ifdef RECOIL_WEB_RENDER
+	static void WebMainLoopIteration(void* arg);    //!< Browser: main loop body, called once per animation frame
+	#endif
+
 	bool Init();                                    //!< Initializes engine
 	bool InitWindow(const char* title);             //!< Initializes window
 	bool InitPlatformLibs();
