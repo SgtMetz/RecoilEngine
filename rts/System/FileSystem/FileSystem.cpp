@@ -554,8 +554,20 @@ std::string FileSystem::GetEngineExecutableDir()
 	return GetDirectory(Platform::GetProcessExecutableFile());
 }
 
+#ifdef __EMSCRIPTEN__
+// WASMFS (browser build) loses the name of a mount point in getcwd(): a backend mounted
+// under the in-memory root is not in the memory directory's own entry list, so with the
+// OPFS mount at /recoil a cwd of /recoil/write is reported as "//write". Remember the
+// absolute path ChDir was given instead (the engine only changes into the write dir).
+static std::string emscriptenCwd;
+#endif
+
 std::string FileSystem::GetCwd()
 {
+#ifdef __EMSCRIPTEN__
+	if (!emscriptenCwd.empty())
+		return emscriptenCwd;
+#endif
 	return Impl::StorePathAsString(fs::current_path());
 }
 
@@ -563,6 +575,15 @@ void FileSystem::ChDir(const std::string& dirStr)
 {
 	auto dir = Recoil::filesystem::u8path(dirStr);
 	fs::current_path(dir); //setting path
+#ifdef __EMSCRIPTEN__
+	if (dir.is_absolute()) {
+		emscriptenCwd = Impl::StorePathAsString(dir.lexically_normal());
+		while (emscriptenCwd.size() > 1 && emscriptenCwd.back() == '/')
+			emscriptenCwd.pop_back();
+	} else {
+		emscriptenCwd.clear();
+	}
+#endif
 }
 
 namespace Impl {
