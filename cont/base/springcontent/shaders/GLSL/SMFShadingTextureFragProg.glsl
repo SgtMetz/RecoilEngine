@@ -21,9 +21,9 @@ const float SQUARE_SIZE = 8.0;
 vec3 GetVertex(ivec2 xy) {
 	xy = clamp(xy, ivec2(0), ivec2(mapSizeP1.xy));
 	return vec3(
-		xy.x * SQUARE_SIZE,
+		float(xy.x) * SQUARE_SIZE,
 		texelFetch(heightMapTex, xy, 0).x,
-		xy.y * SQUARE_SIZE
+		float(xy.y) * SQUARE_SIZE
 	);
 }
 
@@ -77,7 +77,7 @@ vec3 CalcFragmentNormal(vec2 uv) {
 }
 
 float EncodeHeight(float relH) {
-	return clamp((255 - 10.0 * relH) / 255, 0.0, 1.0);
+	return clamp((255.0 - 10.0 * relH) / 255.0, 0.0, 1.0);
 }
 
 vec3 GetWaterHeightColor(float relH) {

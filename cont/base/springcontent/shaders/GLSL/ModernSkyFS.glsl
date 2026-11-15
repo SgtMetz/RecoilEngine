@@ -50,20 +50,20 @@ const mat3 m = mat3(0.0, 1.60,  1.20, -1.6, 0.72, -0.96, -1.2, -0.96, 1.28);
 float fbm(vec3 p)
 {
 	float f = 0.0;
-	f += noise(p) / 2 ; p = m * p * 1.1;
-	f += noise(p) / 4 ; p = m * p * 1.2;
-	f += noise(p) / 6 ; p = m * p * 1.3;
-	f += noise(p) / 12; p = m * p * 1.4;
-	f += noise(p) / 24;
+	f += noise(p) / 2.0 ; p = m * p * 1.1;
+	f += noise(p) / 4.0 ; p = m * p * 1.2;
+	f += noise(p) / 6.0 ; p = m * p * 1.3;
+	f += noise(p) / 12.0; p = m * p * 1.4;
+	f += noise(p) / 24.0;
 	return f;
 }
 #else
 float fbm(vec3 p)
 {
 	float f = 0.0;
-	f += noise(p) / 2 ; p = m * p * 1.1;
-	f += noise(p) / 4 ; p = m * p * 2.2;
-	f += noise(p) / 12 ;
+	f += noise(p) / 2.0 ; p = m * p * 1.1;
+	f += noise(p) / 4.0 ; p = m * p * 2.2;
+	f += noise(p) / 12.0 ;
 	f *= 1.25;
 	return f;
 }

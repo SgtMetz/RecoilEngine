@@ -17,7 +17,7 @@ const float SMF_TEXSQR_SIZE = 1024.0;
 const float SMF_DETAILTEX_RES = 0.02;
 
 // specularTexGen is inverseMapSize
-vec2 mapSize = vec2(1.0) / specularTexGen;
+#define mapSize (vec2(1.0) / specularTexGen)
 float HeightAtWorldPos(vec2 wxz){
 	// Some texel magic to make the heightmap tex perfectly align:
 	const vec2 HM_TEXEL = vec2(8.0, 8.0);
