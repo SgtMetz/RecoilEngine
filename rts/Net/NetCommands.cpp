@@ -41,6 +41,10 @@
 
 #include "System/Misc/TracyDefs.h"
 
+#ifdef __EMSCRIPTEN__
+#include <emscripten/heap.h>
+#endif
+
 CONFIG(bool, LogClientData).defaultValue(false);
 
 #define LOG_SECTION_NET "Net"
@@ -59,6 +63,11 @@ void LogDemoSyncSummary()
 		return;
 
 	LOG("[DemoSync] summary: %u demo checksums matched, %u mismatched", numDemoSyncMatches, numDemoSyncMismatches);
+
+	#ifdef __EMSCRIPTEN__
+	// linear memory only grows, so this is the peak; same measure under Node and in browsers
+	LOG("[DemoSync] wasm heap size at exit: %zu MiB (of %zu MiB maximum)", emscripten_get_heap_size() >> 20, emscripten_get_heap_max() >> 20);
+	#endif
 }
 
 
