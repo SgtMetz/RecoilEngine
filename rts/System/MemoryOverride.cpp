@@ -69,9 +69,14 @@ void* aligned_alloc(size_t alignment, size_t size)
 		return _aligned_malloc(size, alignment);
 	#else
 		// std::aligned_alloc requires size to be a multiple of alignment (C11/C++17);
-		// unlike posix_memalign, passing a non-multiple is undefined behaviour
-		assert(size % alignment == 0);
-		return std::aligned_alloc(alignment, size);
+		// unlike posix_memalign, passing a non-multiple is undefined behaviour.
+		// glibc tolerates it, but musl-based libcs (Emscripten) return nullptr, and callers
+		// such as LuaVBOImpl::AllocGLBuffer pass arbitrary sizes and do not check the result
+		// (in wasm a write through null does not trap: it lands in static data).
+		// Round the size up instead of asserting, which release builds compile out.
+		alignment = std::max<size_t>(alignment, sizeof(void*));
+		size = ((size + alignment - 1) / alignment) * alignment;
+		return std::aligned_alloc(alignment, std::max(size, alignment));
 	#endif
 #endif
 }
