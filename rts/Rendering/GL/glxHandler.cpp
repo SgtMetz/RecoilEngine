@@ -1,6 +1,6 @@
 #include "glxHandler.h"
 
-#if !defined(HEADLESS) && !defined(_WIN32) && !defined(__APPLE__)
+#if !defined(HEADLESS) && !defined(_WIN32) && !defined(__APPLE__) && !defined(__EMSCRIPTEN__)
 
 #include <glad/glad_glx.h>
 #include <SDL_syswm.h>

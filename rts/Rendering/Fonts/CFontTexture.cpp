@@ -18,6 +18,11 @@
 	#endif
 #endif // HEADLESS
 
+#if !defined(HEADLESS) && !defined(USE_FONTCONFIG)
+// built without fontconfig (e.g. the browser build): fonts are only looked up in the VFS
+struct FcConfig;
+#endif
+
 #include "Rendering/GL/myGL.h"
 #include "Rendering/GlobalRendering.h"
 #include "Rendering/Textures/Bitmap.h"
@@ -262,8 +267,10 @@ public:
 	}
 
 	void InitFailed() {
+		#ifdef USE_FONTCONFIG
 		FcConfigDestroy(config);
 		//FcFini();
+		#endif
 		config = nullptr;
 	}
 	static bool InitSingletonFontconfig(bool console) { return singleton->InitFontconfig(console); }

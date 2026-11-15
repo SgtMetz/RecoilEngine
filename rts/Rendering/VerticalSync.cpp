@@ -68,7 +68,8 @@ void CVerticalSync::SetInterval(int i)
 
 	configHandler->Set("VSync", interval = i);
 
-	#if defined HEADLESS
+	#if defined(HEADLESS) || defined(RECOIL_WEB_RENDER)
+	// browser: frames are presented on requestAnimationFrame, there is no swap interval
 	return;
 	#endif
 

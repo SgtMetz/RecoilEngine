@@ -14,6 +14,17 @@
 #include "Rendering/GL/myGL.h"
 #include "Rendering/GL/FBO.h"
 #include "Rendering/GL/glExtra.h"
+#ifdef RECOIL_WEB_RENDER
+#include <emscripten/html5.h>
+#include "Rendering/GL/WebGL/WebGLCompat.h"
+// SDL's EGL context path runs on the page's main thread and cannot serve the
+// OffscreenCanvas owned by the engine's worker (see WebGLCompat.h)
+#define SDL_GL_CreateContext(window) WebGLCompat::CreateContext()
+#define SDL_GL_DeleteContext(ctx) WebGLCompat::DeleteContext(ctx)
+#define SDL_GL_MakeCurrent(window, ctx) WebGLCompat::MakeCurrent(ctx)
+#define SDL_GL_SwapWindow(window) WebGLCompat::SwapWindow()
+#define SDL_GL_GetSwapInterval() 1
+#endif
 #include "Rendering/GL/glxHandler.h"
 #include "Rendering/UniformConstants.h"
 #include "Rendering/Fonts/glFont.h"
@@ -557,6 +568,14 @@ bool CGlobalRendering::CreateWindowAndContext(const char* title)
 	SDL_GL_SetAttribute(SDL_GL_CONTEXT_MAJOR_VERSION, minCtx.x);
 	SDL_GL_SetAttribute(SDL_GL_CONTEXT_MINOR_VERSION, minCtx.y);
 
+#ifdef RECOIL_WEB_RENDER
+	// browser: the only context there is is WebGL2 (GLES 3.0, no profiles, no flags);
+	// WebGLCompat presents it to the engine as a desktop 3.0 compatibility context
+	SDL_GL_SetAttribute(SDL_GL_CONTEXT_PROFILE_MASK, SDL_GL_CONTEXT_PROFILE_ES);
+	SDL_GL_SetAttribute(SDL_GL_CONTEXT_FLAGS, 0);
+	SDL_GL_SetAttribute(SDL_GL_CONTEXT_MAJOR_VERSION, 3);
+	SDL_GL_SetAttribute(SDL_GL_CONTEXT_MINOR_VERSION, 0);
+#endif
 
 	if (msaaLevel > 0) {
 		if (softGL != nullptr)
@@ -587,7 +606,15 @@ bool CGlobalRendering::CreateWindowAndContext(const char* title)
 	if ((glContext = CreateGLContext(minCtx)) == nullptr)
 		return false;
 
+#ifdef RECOIL_WEB_RENDER
+	// browser: WebGL2 behind a desktop-GL shim
+	if (!WebGLCompat::Load()) {
+		handleerror(nullptr, "failed to initialize the WebGL2 compatibility layer, aborting", "ERROR", MBF_OK | MBF_EXCL);
+		return false;
+	}
+#else
 	gladLoadGL();
+#endif
 	GLX::Load(sdlWindow);
 
 	if (!CheckGLContextVersion(minCtx)) {
@@ -1395,6 +1422,16 @@ void CGlobalRendering::GetDisplayBounds(SDL_Rect& r, const int* di) const
 {
 	const int displayIndex = di ? *di : GetCurrentDisplayIndex();
 	SDL_GetDisplayBounds(displayIndex, &r);
+#ifdef RECOIL_WEB_RENDER
+	// SDL reads window.screen, which the engine's worker thread does not have: the bounds
+	// come back 0x0, and UpdateScreenMatrices then builds a NaN screen projection that
+	// clips every LuaUI screen-space draw. The canvas is the whole screen there.
+	if (r.w <= 0 || r.h <= 0) {
+		int w = 0, h = 0;
+		emscripten_get_canvas_element_size("#canvas", &w, &h);
+		r = {0, 0, std::max(w, 1), std::max(h, 1)};
+	}
+#endif
 }
 
 void CGlobalRendering::GetUsableDisplayBounds(SDL_Rect& r, const int* di) const

@@ -3,7 +3,7 @@
 #include "System/Platform/WindowManagerHelper.h"
 #include <SDL_syswm.h>
 
-#ifndef HEADLESS
+#if !defined(HEADLESS) && !defined(__EMSCRIPTEN__)
 	#include <X11/Xlib.h>
 	#undef KeyPress
 	#undef KeyRelease
@@ -14,7 +14,7 @@ namespace WindowManagerHelper {
 
 void BlockCompositing(SDL_Window* window)
 {
-#ifndef HEADLESS
+#if !defined(HEADLESS) && !defined(__EMSCRIPTEN__)
 	SDL_SysWMinfo info;
 	SDL_VERSION(&info.version);
 	if (!SDL_GetWindowWMInfo(window, &info))
@@ -36,7 +36,7 @@ void BlockCompositing(SDL_Window* window)
 int GetWindowState(SDL_Window* window)
 {
 	int flags = 0;
-#ifndef HEADLESS
+#if !defined(HEADLESS) && !defined(__EMSCRIPTEN__)
 	SDL_SysWMinfo info;
 	SDL_VERSION(&info.version);
 	if (!SDL_GetWindowWMInfo(window, &info))
