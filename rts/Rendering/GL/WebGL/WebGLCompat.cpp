@@ -2,6 +2,7 @@
 
 #include "WebGLCompat.h"
 #include "WebGLInternal.h"
+#include "WebGLShaderTranslate.h"
 
 #include <glad/glad.h>
 
@@ -429,6 +430,16 @@ void WebGLCompat::LogStubStats(bool final)
 			LOG("[WebGLCompat::%s] draws recorded into display lists: %u (%u with missing data); GL_QUADS element draws dropped: %u",
 				__func__, recorded, failed, skipped);
 			lastRecorded = recorded; lastFailed = failed; lastSkipped = skipped;
+		}
+	}
+	{
+		static int lastOk = -1, lastFailed = -1;
+		int ok = 0, failed = 0;
+		GetCrossCompileStats(ok, failed);
+		if (CrossCompileAvailable() && (final || ok != lastOk || failed != lastFailed)) {
+			LOG("[WebGLCompat::%s] shaders cross-compiled with glslang + SPIRV-Cross: %d; fell back to the text translation: %d",
+				__func__, ok, failed);
+			lastOk = ok; lastFailed = failed;
 		}
 	}
 

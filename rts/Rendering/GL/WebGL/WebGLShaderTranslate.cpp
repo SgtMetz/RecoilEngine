@@ -53,6 +53,27 @@ namespace {
 		return std::string(v);
 	}
 
+	// comments -> spaces (newlines inside block comments are kept)
+	std::string StripComments(const std::string& s) {
+		std::string out;
+		out.reserve(s.size());
+		for (size_t i = 0; i < s.size(); ) {
+			if (s.compare(i, 2, "//") == 0) {
+				while (i < s.size() && s[i] != '\n')
+					i++;
+				out += ' ';
+			} else if (s.compare(i, 2, "/*") == 0) {
+				const size_t end = s.find("*/", i + 2);
+				const size_t stop = (end == std::string::npos)? s.size(): end + 2;
+				for (; i < stop; i++)
+					out += (s[i] == '\n')? '\n': ' ';
+			} else {
+				out += s[i++];
+			}
+		}
+		return out;
+	}
+
 	// blank out a line (keeps the newline, so line numbers in compile logs stay right)
 	void BlankLineAt(std::string& s, size_t pos) {
 		size_t begin = s.rfind('\n', pos);
@@ -160,20 +181,17 @@ namespace {
 					continue;
 				}
 
-				// members: "[qualifiers] type name[N]" separated by ';'
+				// members: "[qualifiers] type name[N]" separated by ';'. Comments are dropped,
+				// preprocessor lines (#if around members) are kept on lines of their own, and
+				// so are the newlines, which keeps the line numbering of the rest.
 				std::string decls;
 				std::vector<std::pair<std::string, std::string>> renames; // member -> flattened name
-				const std::string body = s.substr(bracePos + 1, closePos - bracePos - 1);
+				const std::string body = StripComments(s.substr(bracePos + 1, closePos - bracePos - 1));
 
-				size_t memberBegin = 0;
-				while (memberBegin < body.size()) {
-					size_t memberEnd = body.find(';', memberBegin);
-					if (memberEnd == std::string::npos)
-						memberEnd = body.size();
-					std::string member = Trim(std::string_view(body).substr(memberBegin, memberEnd - memberBegin));
-					memberBegin = memberEnd + 1;
+				const auto addMember = [&](std::string member) {
+					member = Trim(member);
 					if (member.empty())
-						continue;
+						return;
 
 					if (!instName.empty()) {
 						// the member name is the last identifier before an optional array suffix
@@ -191,7 +209,37 @@ namespace {
 						renames.emplace_back(memberName, flatName);
 					}
 					decls += std::string(qual) + " " + member + "; ";
+				};
+
+				std::string member;
+				for (size_t lineBegin = 0; lineBegin <= body.size(); ) {
+					size_t lineEnd = body.find('\n', lineBegin);
+					if (lineEnd == std::string::npos)
+						lineEnd = body.size();
+					const std::string_view line = std::string_view(body).substr(lineBegin, lineEnd - lineBegin);
+					const size_t first = line.find_first_not_of(" \t\r");
+
+					if (first != std::string_view::npos && line[first] == '#') {
+						// preprocessor directives must start a line
+						if (!decls.empty() && decls.back() != '\n')
+							decls += '\n';
+						decls += line;
+					} else {
+						for (const char c: line) {
+							if (c == ';') {
+								addMember(member);
+								member.clear();
+							} else {
+								member += c;
+							}
+						}
+						member += ' ';
+					}
+					if (lineEnd < body.size())
+						decls += '\n';
+					lineBegin = lineEnd + 1;
 				}
+				addMember(member);
 
 				s.replace(pos, endPos + 1 - pos, decls);
 				for (const auto& [memberName, flatName]: renames)
@@ -324,7 +372,7 @@ namespace {
 }
 
 
-WebGLCompat::ShaderTranslation WebGLCompat::TranslateShader(bool isVertex, const std::string& src, uint32_t forceVaryings, const std::vector<std::pair<std::string, int>>* fragOutputBindings)
+WebGLCompat::ShaderTranslation WebGLCompat::TranslateShader(bool isVertex, const std::string& src, uint32_t forceVaryings, const std::vector<std::pair<std::string, int>>* fragOutputBindings, bool forGlslang)
 {
 	ShaderTranslation res;
 	std::string s = src;
@@ -332,22 +380,43 @@ WebGLCompat::ShaderTranslation WebGLCompat::TranslateShader(bool isVertex, const
 	res.glslVersion = ExtractVersion(s);
 	StripExtensions(s);
 	NeutralizeExtensionMacros(s);
+	if (forGlslang) {
+		// resolve the preprocessor first (the original #version line is blanked, so
+		// "#line 1" keeps the numbering); on failure the rewrites see the raw text
+		std::string pp;
+		const std::string versioned = "#version " + std::to_string(res.glslVersion) + ((res.glslVersion >= 150)? " compatibility": "") + "\n#line 1\n" + s;
+		if (PreprocessGlsl(versioned, pp)) {
+			s = std::move(pp);
+			ExtractVersion(s);
+			StripExtensions(s);
+		}
+	}
 	FlattenInterfaceBlocks(s);
 	StripUniformInitializers(s, res.uniformDefaults);
 
 	std::string pre;
 	pre.reserve(2048);
-	pre += "#version 300 es\n";
-	pre += "precision highp float;\nprecision highp int;\n";
-	for (const char* samplerType: {
-		"sampler2D", "sampler3D", "samplerCube", "sampler2DArray",
-		"sampler2DShadow", "samplerCubeShadow", "sampler2DArrayShadow",
-		"isampler2D", "isampler3D", "isamplerCube", "isampler2DArray",
-		"usampler2D", "usampler3D", "usamplerCube", "usampler2DArray",
-	}) {
-		pre += "precision highp ";
-		pre += samplerType;
-		pre += ";\n";
+	if (forGlslang) {
+		// SPIR-V for OpenGL needs GLSL 3.30 or later; the rewrites below already turned the
+		// compatibility-profile parts into core GLSL. layout(binding) and line continuations
+		// need 4.20 (GL_ARB_shading_language_420pack, stripped with the other extensions).
+		int version = std::max(res.glslVersion, 330);
+		if (version < 420 && (HasIdent(s, "binding") || s.find("\\\n") != std::string::npos || s.find("\\\r\n") != std::string::npos))
+			version = 420;
+		pre += "#version " + std::to_string(version) + " core\n";
+	} else {
+		pre += "#version 300 es\n";
+		pre += "precision highp float;\nprecision highp int;\n";
+		for (const char* samplerType: {
+			"sampler2D", "sampler3D", "samplerCube", "sampler2DArray",
+			"sampler2DShadow", "samplerCubeShadow", "sampler2DArrayShadow",
+			"isampler2D", "isampler3D", "isamplerCube", "isampler2DArray",
+			"usampler2D", "usampler3D", "usamplerCube", "usampler2DArray",
+		}) {
+			pre += "precision highp ";
+			pre += samplerType;
+			pre += ";\n";
+		}
 	}
 
 	// --- pre-1.30 storage qualifiers and texture functions

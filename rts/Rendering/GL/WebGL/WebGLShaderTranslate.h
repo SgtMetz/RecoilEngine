@@ -54,5 +54,29 @@ namespace WebGLCompat {
 	//   fragment stage reads them and GLSL ES requires a matching vertex output
 	// fragOutputBindings: (fragment stage) glBindFragDataLocation name -> index pairs; when
 	//   given, every user-declared output without a layout qualifier gets a location
-	ShaderTranslation TranslateShader(bool isVertex, const std::string& src, uint32_t forceVaryings = 0, const std::vector<std::pair<std::string, int>>* fragOutputBindings = nullptr);
+	// forGlslang: emit desktop GLSL (#version >= 330 core, no precision statements) with the
+	//   same rewrites, as input for CrossCompile instead of for the WebGL compiler
+	ShaderTranslation TranslateShader(bool isVertex, const std::string& src, uint32_t forceVaryings = 0, const std::vector<std::pair<std::string, int>>* fragOutputBindings = nullptr, bool forGlslang = false);
+
+	// Second stage (engine-web built with RECOIL_WEB_GLSLANG): desktop GLSL from
+	// TranslateShader(..., forGlslang = true) -> SPIR-V (glslang) -> GLSL ES 3.00 (SPIRV-Cross).
+	// Names of attributes, varyings, uniforms and blocks are kept, so the engine's lookups
+	// and glBindAttribLocation still work. GLSL ES 3.00 has no binding qualifier: explicit
+	// layout(binding = N) on samplers and uniform blocks is returned, to be applied after
+	// linking. Returns false (with the compiler log) when either step fails; the caller
+	// then falls back to the text translation.
+	struct CrossCompiled {
+		std::string source;
+		std::vector<std::pair<std::string, int>> samplerBindings; // uniform name -> texture unit
+		std::vector<std::pair<std::string, int>> blockBindings;   // uniform block name -> binding
+		std::string log;
+	};
+	bool CrossCompileAvailable();
+	// glslang's preprocessor alone (desktop rules; src carries its #version). Used by
+	// TranslateShader(forGlslang) before its text rewrites, so that those only see the
+	// active #if branches (e.g. a gl_FragColor in a disabled branch next to a declared
+	// output). False without glslang or on a preprocessor error.
+	bool PreprocessGlsl(const std::string& src, std::string& out);
+	bool CrossCompile(bool isVertex, const std::string& desktopSrc, CrossCompiled& out);
+	void GetCrossCompileStats(int& ok, int& failed);
 }

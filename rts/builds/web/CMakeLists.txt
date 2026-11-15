@@ -72,6 +72,21 @@ add_executable(engine-web
 target_link_libraries(engine-web no-sound ${engineWebLibraries} GameWeb no-sound)
 add_dependencies(engine-web generateVersionFiles basecontent)
 
+# Optional: glslang + SPIRV-Cross (built for Emscripten, found through CMAKE_PREFIX_PATH)
+# compile the engine's desktop GLSL to SPIR-V and back to GLSL ES 3.00, which handles what
+# the text translator cannot (implicit conversions, GLSL 4 syntax). Without them only the
+# text translation is used.
+find_package(glslang CONFIG QUIET NO_CMAKE_FIND_ROOT_PATH)
+find_package(spirv_cross_core CONFIG QUIET NO_CMAKE_FIND_ROOT_PATH)
+find_package(spirv_cross_glsl CONFIG QUIET NO_CMAKE_FIND_ROOT_PATH)
+if (glslang_FOUND AND spirv_cross_core_FOUND AND spirv_cross_glsl_FOUND)
+	message(STATUS "engine-web: shader cross-compilation with glslang ${glslang_VERSION} + SPIRV-Cross")
+	target_compile_definitions(engine-web PRIVATE RECOIL_WEB_GLSLANG)
+	target_link_libraries(engine-web glslang::glslang glslang::glslang-default-resource-limits spirv-cross-glsl spirv-cross-core)
+else ()
+	message(STATUS "engine-web: glslang/SPIRV-Cross not found, text shader translation only")
+endif ()
+
 # OffscreenCanvas: with PROXY_TO_PTHREAD the engine's main thread is a worker; the page's
 # <canvas id="canvas"> is transferred to it and the WebGL2 context lives there.
 target_link_options(engine-web PRIVATE
@@ -82,6 +97,8 @@ target_link_options(engine-web PRIVATE
 	-sFULL_ES3=1
 	-sOFFSCREENCANVAS_SUPPORT=1
 	"-sOFFSCREENCANVASES_TO_PTHREAD=#canvas"
+	# spring-web.js.symbols: wasm function index -> name, for reading stack traces
+	--emit-symbol-map
 )
 set_target_properties(engine-web PROPERTIES
 	OUTPUT_NAME "spring-web"

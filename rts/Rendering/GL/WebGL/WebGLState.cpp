@@ -15,6 +15,8 @@
 #include <algorithm>
 #include <array>
 #include <cmath>
+#include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <string>
 #include <unordered_map>
@@ -311,6 +313,9 @@ namespace {
 		uint32_t attribsUsed = 0;
 		int numFragOutputs = 0;
 		std::vector<WebGLCompat::UniformDefault> uniformDefaults;
+		// explicit layout(binding) of the cross-compiled source (GLSL ES 3.00 has none)
+		std::vector<std::pair<std::string, int>> samplerBindings;
+		std::vector<std::pair<std::string, int>> blockBindings;
 	};
 	struct ProgramInfo {
 		std::vector<GLuint> shaders;
@@ -365,7 +370,47 @@ namespace {
 		info.varyingsUsed = xl.varyingsUsed;
 		info.attribsUsed = xl.attribsUsed;
 		info.uniformDefaults = xl.uniformDefaults;
+		info.samplerBindings.clear();
+		info.blockBindings.clear();
 		info.translated = true;
+
+		// preferred: glslang + SPIRV-Cross on the same rewrites as desktop GLSL; the text
+		// translation is the fallback when that fails
+		if (WebGLCompat::CrossCompileAvailable()) {
+			const WebGLCompat::ShaderTranslation dx = WebGLCompat::TranslateShader(info.isVertex, info.origSource, forceVaryings, fragOutputBindings, true);
+			WebGLCompat::CrossCompiled cc;
+			// diagnostics: RECOIL_WEB_GLSLANG=2 compiles but discards the result;
+			// RECOIL_WEB_GLSLANG_LIMIT=N uses it for the first N shaders only
+			static const bool discard = (std::getenv("RECOIL_WEB_GLSLANG") != nullptr && std::strcmp(std::getenv("RECOIL_WEB_GLSLANG"), "2") == 0);
+			static const int limit = (std::getenv("RECOIL_WEB_GLSLANG_LIMIT") != nullptr)? std::atoi(std::getenv("RECOIL_WEB_GLSLANG_LIMIT")): -1;
+			static int numUsed = 0;
+			if (WebGLCompat::CrossCompile(info.isVertex, dx.source, cc) && !discard && (limit < 0 || numUsed < limit)) {
+				if (limit >= 0 && ++numUsed == limit) {
+					const std::string head = info.origSource.substr(0, std::min<size_t>(info.origSource.find_first_of('\n', info.origSource.find_first_not_of(" \t\r\n")), 120));
+					LOG("[WebGLCompat] RECOIL_WEB_GLSLANG_LIMIT=%d reached at this %s shader (shader %u): %s", limit, info.isVertex? "vertex": "fragment", shader, head.c_str());
+				}
+				info.samplerBindings = std::move(cc.samplerBindings);
+				info.blockBindings = std::move(cc.blockBindings);
+				const GLchar* ptr = cc.source.c_str();
+				real_glShaderSource(shader, 1, &ptr, nullptr);
+				return;
+			}
+			static int numFailed = 0;
+			if (++numFailed <= 12) {
+				// first line of the original source usually names the shader well enough
+				const std::string head = info.origSource.substr(0, std::min<size_t>(info.origSource.find_first_of('\n', info.origSource.find_first_not_of(" \t\r\n")), 120));
+				LOG_L(L_WARNING, "[WebGLCompat] %s shader: cross-compilation failed, using the text translation (%s): %.600s",
+					info.isVertex? "vertex": "fragment", head.c_str(), cc.log.c_str());
+			}
+			// RECOIL_WEB_TRACE: keep glslang's input for inspection (<cwd>/xc-fail-N.glsl)
+			if (std::getenv("RECOIL_WEB_TRACE") != nullptr) {
+				const std::string path = "xc-fail-" + std::to_string(numFailed) + ".glsl";
+				if (FILE* f = fopen(path.c_str(), "wb"); f != nullptr) {
+					fprintf(f, "// %s\n%s", cc.log.c_str(), dx.source.c_str());
+					fclose(f);
+				}
+			}
+		}
 		const GLchar* ptr = xl.source.c_str();
 		real_glShaderSource(shader, 1, &ptr, nullptr);
 	}
@@ -490,6 +535,17 @@ namespace {
 				else if (d.type == "vec2") real_glUniform2fv(l, 1, v);
 				else if (d.type == "vec3") real_glUniform3fv(l, 1, v);
 				else if (d.type == "vec4") real_glUniform4fv(l, 1, v);
+			}
+			// layout(binding = N) of the original source, dropped by the GLSL ES 3.00 output
+			for (const auto& [name, unit]: sh->samplerBindings) {
+				const GLint l = real_glGetUniformLocation(program, name.c_str());
+				if (l >= 0)
+					real_glUniform1i(l, unit);
+			}
+			for (const auto& [name, binding]: sh->blockBindings) {
+				const GLuint idx = glGetUniformBlockIndex(program, name.c_str());
+				if (idx != GL_INVALID_INDEX)
+					glUniformBlockBinding(program, idx, GLuint(binding));
 			}
 		}
 		real_glUseProgram(currentProgram);
