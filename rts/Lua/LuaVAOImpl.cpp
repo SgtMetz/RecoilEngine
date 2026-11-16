@@ -1,3 +1,5 @@
+/* This file is part of the Spring engine (GPL v2 or later), see LICENSE.html */
+
 #include "LuaVAOImpl.h"
 
 #include <algorithm>
@@ -58,7 +60,13 @@ LuaVAOImpl::~LuaVAOImpl()
 
 bool LuaVAOImpl::Supported()
 {
-	static bool supported = VBO::IsSupported(GL_ARRAY_BUFFER) && VAO::IsSupported() && GLAD_GL_ARB_instanced_arrays && GLAD_GL_ARB_draw_elements_base_vertex && GLAD_GL_ARB_multi_draw_indirect;
+	// WebGL2 supplies VAOs and instancing, but not base offsets or indirect draws.
+	// Those operations are checked separately before any GL state is changed.
+	static bool supported = VBO::IsSupported(GL_ARRAY_BUFFER) && VAO::IsSupported() && GLAD_GL_ARB_instanced_arrays
+#ifndef RECOIL_WEB_RENDER
+		&& GLAD_GL_ARB_draw_elements_base_vertex && GLAD_GL_ARB_multi_draw_indirect
+#endif
+	;
 	return supported;
 }
 
@@ -146,6 +154,10 @@ const SIndexAndCount LuaVAOImpl::GetDrawIndicesImpl(const TObj* obj)
 template<typename TObj>
 int LuaVAOImpl::AddObjectsToSubmissionImpl(int id)
 {
+#ifdef RECOIL_WEB_RENDER
+	LuaUtils::SolLuaError("[LuaVAOImpl::%s]: Indirect submission is unavailable in WebGL2", __func__);
+	return 0;
+#endif
 	DrawCheckInput inputs{
 		std::nullopt,
 		std::nullopt,
@@ -163,6 +175,10 @@ int LuaVAOImpl::AddObjectsToSubmissionImpl(int id)
 template<typename TObj>
 int LuaVAOImpl::AddObjectsToSubmissionImpl(const sol::stack_table& ids)
 {
+#ifdef RECOIL_WEB_RENDER
+	LuaUtils::SolLuaError("[LuaVAOImpl::%s]: Indirect submission is unavailable in WebGL2", __func__);
+	return 0;
+#endif
 	const std::size_t idsSize = ids.size(); //size() is very costly to do in the loop
 
 	DrawCheckInput inputs{
@@ -207,14 +223,16 @@ void LuaVAOImpl::CheckDrawPrimitiveType(GLenum mode) const
 	case GL_LINE_STRIP:
 	case GL_LINE_LOOP:
 	case GL_LINES:
-	case GL_LINE_STRIP_ADJACENCY:
-	case GL_LINES_ADJACENCY:
 	case GL_TRIANGLE_STRIP:
 	case GL_TRIANGLE_FAN:
 	case GL_TRIANGLES:
+#ifndef RECOIL_WEB_RENDER
+	case GL_LINE_STRIP_ADJACENCY:
+	case GL_LINES_ADJACENCY:
 	case GL_TRIANGLE_STRIP_ADJACENCY:
 	case GL_TRIANGLES_ADJACENCY:
 	case GL_PATCHES:
+#endif
 		break;
 	default:
 		LuaUtils::SolLuaError("[LuaVAOImpl::%s]: Using deprecated or incorrect primitive type (%d)", __func__, mode);
@@ -358,6 +376,16 @@ LuaVAOImpl::DrawCheckResult LuaVAOImpl::DrawCheck(GLenum mode, const DrawCheckIn
 			LuaUtils::SolLuaError("[LuaVAOImpl::%s]: Requested baseInstance [%d] and but zero instance count", __func__, result.baseInstance);
 	}
 
+#ifdef RECOIL_WEB_RENDER
+	if (result.baseVertex != 0 || result.baseInstance != 0)
+		LuaUtils::SolLuaError("[LuaVAOImpl::%s]: Nonzero base vertex or base instance is unavailable in WebGL2", __func__);
+
+	// WebGL2 always uses fixed-index restart. Lua's uint buffers instead use
+	// 0xffffff, so reject them until custom restart can be translated correctly.
+	if (indexed && indxLuaVBO->bufferAttribDefsVec[0].second.type == GL_UNSIGNED_INT)
+		LuaUtils::SolLuaError("[LuaVAOImpl::%s]: Custom uint primitive restart is unavailable in WebGL2; use byte or ushort indices", __func__);
+#endif
+
 	CheckDrawPrimitiveType(mode);
 	CondInitVAO();
 
@@ -429,8 +457,10 @@ void LuaVAOImpl::DrawElements(GLenum mode, sol::optional<int> indCountOpt, sol::
 
 	const auto indexType = indxLuaVBO->bufferAttribDefsVec[0].second.type;
 
+#ifndef RECOIL_WEB_RENDER
 	glEnable(GL_PRIMITIVE_RESTART);
 	glPrimitiveRestartIndex(indxLuaVBO->primitiveRestartIndex);
+#endif
 
 	vao->Bind();
 
@@ -454,7 +484,9 @@ void LuaVAOImpl::DrawElements(GLenum mode, sol::optional<int> indCountOpt, sol::
 
 	vao->Unbind();
 
+#ifndef RECOIL_WEB_RENDER
 	glDisable(GL_PRIMITIVE_RESTART);
+#endif
 }
 
 void LuaVAOImpl::ClearSubmission()
@@ -534,6 +566,10 @@ void LuaVAOImpl::RemoveFromSubmission(int idx)
  */
 void LuaVAOImpl::Submit()
 {
+#ifdef RECOIL_WEB_RENDER
+	LuaUtils::SolLuaError("[LuaVAOImpl::%s]: Indirect submission is unavailable in WebGL2", __func__);
+	return;
+#else
 	glEnable(GL_PRIMITIVE_RESTART);
 	glPrimitiveRestartIndex(indxLuaVBO->primitiveRestartIndex);
 
@@ -542,4 +578,5 @@ void LuaVAOImpl::Submit()
 	vao->Unbind();
 
 	glDisable(GL_PRIMITIVE_RESTART);
+#endif
 }
