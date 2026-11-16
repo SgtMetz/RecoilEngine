@@ -278,7 +278,20 @@ namespace {
 	REAL(glGetFloatv);
 	REAL(glGetIntegerv);
 
+	// GL_CLIP_PLANEi (== GL_CLIP_DISTANCEi) as the engine enabled it. The real WebGL enables
+	// follow the current program (SyncClipDistances) and lag behind glDisable until the next
+	// draw; GL::State reads capabilities back with glGetBooleanv and restores what it read, so
+	// a stale real value would re-enable a plane the engine had disabled.
+	bool ClipCapQuery(GLenum pname, bool& on) {
+		if (pname < GL_CLIP_PLANE0 || pname >= GL_CLIP_PLANE0 + 8)
+			return false;
+		const auto it = localCaps.find(pname);
+		on = (it != localCaps.end() && it->second);
+		return true;
+	}
+
 	void APIENTRY compat_glGetFloatv(GLenum pname, GLfloat* data) {
+		if (bool on; ClipCapQuery(pname, on)) { *data = on? 1.0f: 0.0f; return; }
 		switch (pname) {
 			case GL_MODELVIEW_MATRIX: std::memcpy(data, modelviewStack.Top().m, sizeof(Mat4)); return;
 			case GL_PROJECTION_MATRIX: std::memcpy(data, projectionStack.Top().m, sizeof(Mat4)); return;
@@ -303,6 +316,7 @@ namespace {
 	}
 
 	void APIENTRY compat_glGetIntegerv(GLenum pname, GLint* data) {
+		if (bool on; ClipCapQuery(pname, on)) { *data = on? 1: 0; return; }
 		switch (pname) {
 			case GL_MATRIX_MODE: *data = GLint(matrixMode); return;
 			case GL_MODELVIEW_STACK_DEPTH: *data = GLint(modelviewStack.stack.size()); return;
@@ -1053,6 +1067,7 @@ namespace {
 	REAL(glGetBooleanv);
 	void APIENTRY compat_glGetBooleanv(GLenum pname, GLboolean* data) {
 		if (pname == GL_LIST_INDEX) { *data = (WebGLCompat::GetCompilingList() != 0)? GL_TRUE: GL_FALSE; return; }
+		if (bool on; ClipCapQuery(pname, on)) { *data = on? GL_TRUE: GL_FALSE; return; }
 		real_glGetBooleanv(pname, data);
 	}
 
