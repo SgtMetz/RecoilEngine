@@ -35,12 +35,12 @@ bool WebGLCompat::CrossCompile(bool, const std::string&, CrossCompiled& out) { o
 
 bool WebGLCompat::CrossCompileAvailable()
 {
-	// Opt in until games can handle the WebGL2 capability limits after shader success.
-	// BAR's scum gadget currently aborts unsynced LuaRules initialization on a nil VAO,
-	// which also tears down the synced half. Mode 2 compiles but discards the output.
+	// Prefer cross-compilation when built in. WebGL2 LuaVAOs support the basic
+	// instanced draws needed after BAR's scum shader compiles. Set mode 0 for
+	// the text fallback; mode 2 compiles but discards the output.
 	static const bool enabled = [] {
 		const char* env = std::getenv("RECOIL_WEB_GLSLANG");
-		return env != nullptr && std::strcmp(env, "0") != 0;
+		return env == nullptr || std::strcmp(env, "0") != 0;
 	}();
 	return enabled;
 }
