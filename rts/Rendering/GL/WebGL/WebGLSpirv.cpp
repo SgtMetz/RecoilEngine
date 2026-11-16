@@ -140,6 +140,8 @@ bool WebGLCompat::CrossCompile(bool isVertex, const std::string& desktopSrc, Cro
 		opts.es = true;
 		opts.vertex.fixup_clipspace = false;
 		opts.vertex.flip_vert_y = false;
+		// GLSL ES 3.00 has no arrays of arrays (e.g. BAR's nano particle shapes)
+		opts.flatten_multidimensional_arrays = true;
 		opts.fragment.default_float_precision = spirv_cross::CompilerGLSL::Options::Highp;
 		opts.fragment.default_int_precision = spirv_cross::CompilerGLSL::Options::Highp;
 		compiler.set_common_options(opts);
