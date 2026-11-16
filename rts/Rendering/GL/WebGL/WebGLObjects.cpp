@@ -556,6 +556,43 @@ namespace {
 		Record(target, level, internalFormat, w, h, 1, false);
 	}
 
+	// ---- renderbuffers ----------------------------------------------------------------
+	// WebGL2 renderbuffers need sized formats. Desktop GL accepts unsized ones: the engine's
+	// reflection cubemap (CubeMapHandler) asks for GL_DEPTH_COMPONENT, which WebGL rejects,
+	// leaving the depth attachment without storage and the FBO incomplete, so every face
+	// render failed. RGB float formats are not renderable in WebGL2 (EXT_color_buffer_float
+	// covers R/RG/RGBA only), as for textures. GL_DEPTH_COMPONENT32 stays unmapped: the
+	// engine probes it to choose its depth precision, and 24 bits is what it then uses.
+	REAL(glRenderbufferStorage);
+	REAL(glRenderbufferStorageEXT);
+	REAL(glRenderbufferStorageMultisample);
+	REAL(glRenderbufferStorageMultisampleEXT);
+
+	GLenum RenderbufferFormat(GLenum internalFormat) {
+		switch (internalFormat) {
+			case GL_DEPTH_COMPONENT: return GL_DEPTH_COMPONENT24;
+			case GL_DEPTH_STENCIL: return GL_DEPTH24_STENCIL8;
+			case GL_RGBA: return GL_RGBA8;
+			case GL_RGB: return GL_RGB8;
+			case GL_RGB16F: return GL_RGBA16F;
+			case GL_RGB32F: return GL_RGBA32F;
+			default: return internalFormat;
+		}
+	}
+
+	void APIENTRY compat_glRenderbufferStorage(GLenum target, GLenum internalFormat, GLsizei w, GLsizei h) {
+		real_glRenderbufferStorage(target, RenderbufferFormat(internalFormat), w, h);
+	}
+	void APIENTRY compat_glRenderbufferStorageEXT(GLenum target, GLenum internalFormat, GLsizei w, GLsizei h) {
+		real_glRenderbufferStorageEXT(target, RenderbufferFormat(internalFormat), w, h);
+	}
+	void APIENTRY compat_glRenderbufferStorageMultisample(GLenum target, GLsizei samples, GLenum internalFormat, GLsizei w, GLsizei h) {
+		real_glRenderbufferStorageMultisample(target, samples, RenderbufferFormat(internalFormat), w, h);
+	}
+	void APIENTRY compat_glRenderbufferStorageMultisampleEXT(GLenum target, GLsizei samples, GLenum internalFormat, GLsizei w, GLsizei h) {
+		real_glRenderbufferStorageMultisampleEXT(target, samples, RenderbufferFormat(internalFormat), w, h);
+	}
+
 	void APIENTRY compat_glGetTexLevelParameteriv(GLenum target, GLint level, GLenum pname, GLint* params) {
 		*params = 0;
 		const TexInfo* t = BoundTexInfo(target);
@@ -685,4 +722,6 @@ void WebGLCompat::InstallObjectEmulation()
 	glad_glGetTexLevelParameteriv = compat_glGetTexLevelParameteriv;
 	glad_glGetTexLevelParameterfv = compat_glGetTexLevelParameterfv;
 	HOOK(glReadPixels);
+	HOOK(glRenderbufferStorage); HOOK(glRenderbufferStorageEXT);
+	HOOK(glRenderbufferStorageMultisample); HOOK(glRenderbufferStorageMultisampleEXT);
 }
