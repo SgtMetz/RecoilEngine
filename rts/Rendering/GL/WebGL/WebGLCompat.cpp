@@ -36,6 +36,8 @@ namespace {
 			LogFirstHit(idx);
 	}
 
+	void GLCheckAfter(int idx);
+
 	#include "WebGLStubs.gen.inc"
 
 	static_assert(NUM_GL_FUNCS <= MAX_GL_FUNCS, "raise MAX_GL_FUNCS");
@@ -43,6 +45,63 @@ namespace {
 	// one line the first time each unsupported entry point is called, so the log shows
 	// where in the engine's startup or frame it happened
 	void LogFirstHit(int idx) { LOG("[WebGLCompat] first call of unsupported %s (no-op)", glFuncNames[idx]); }
+
+
+	// ---- RECOIL_WEB_GLCHECK=1 (debugging aid): every non-stubbed entry point is wrapped so
+	// that glGetError is read after it. Errors are attributed to the call that raised them
+	// and logged with a call stack (wasm function indices; spring-web.js.symbols names them).
+	// The first error is kept and returned by the next glGetError, so the engine's own error
+	// checks still see it. Each glGetError is a synchronous round trip: expect slow frames.
+	PFNGLGETERRORPROC real_glGetError = nullptr;
+	GLenum heldError = GL_NO_ERROR;
+	uint32_t glCheckErrors[MAX_GL_FUNCS][4]; // per entry point: INVALID_ENUM/VALUE/OPERATION, other
+	uint32_t glCheckReported[MAX_GL_FUNCS][4];
+	int glCheckStacksLeft = 64;
+
+	void GLCheckAfter(int idx) {
+		const GLenum err = real_glGetError();
+		if (err == GL_NO_ERROR)
+			return;
+		if (heldError == GL_NO_ERROR)
+			heldError = err;
+
+		const int slot = (err >= GL_INVALID_ENUM && err <= GL_INVALID_OPERATION)? int(err - GL_INVALID_ENUM): 3;
+		// a call stack for the first two errors of each kind per entry point
+		if (glCheckErrors[idx][slot]++ >= 2 || glCheckStacksLeft <= 0) {
+			return;
+		}
+		glCheckStacksLeft--;
+		static char stack[4096];
+		emscripten_get_callstack(EM_LOG_C_STACK | EM_LOG_NO_PATHS, stack, sizeof(stack));
+		LOG_L(L_WARNING, "[WebGLCompat] glcheck: %s raised GL error 0x%x; stack:\n%s", glFuncNames[idx], err, stack);
+	}
+
+	GLenum APIENTRY glcheck_glGetError() {
+		const GLenum held = heldError;
+		heldError = GL_NO_ERROR;
+		return (held != GL_NO_ERROR)? held: real_glGetError();
+	}
+
+	void LogGLCheckStats(bool final) {
+		if (real_glGetError == nullptr)
+			return;
+		std::string line;
+		for (int i = 0; i < NUM_GL_FUNCS; i++) {
+			for (int s = 0; s < 4; s++) {
+				const uint32_t n = glCheckErrors[i][s];
+				if (n == glCheckReported[i][s] && !(final && n > 0))
+					continue;
+				line += glFuncNames[i];
+				line += (s < 3)? ":0x" + std::to_string(500 + s): std::string(":other");
+				line += '=';
+				line += std::to_string(final? n: n - glCheckReported[i][s]);
+				line += ' ';
+				glCheckReported[i][s] = n;
+			}
+		}
+		if (!line.empty())
+			LOG("[WebGLCompat] glcheck: GL errors %s: %s", final? "in total": "since last report", line.c_str());
+	}
 
 	// real WebGL2 entry points behind the overrides below
 	PFNGLGETSTRINGPROC   real_glGetString   = nullptr;
@@ -448,6 +507,13 @@ bool WebGLCompat::Load()
 	InstallObjectEmulation();
 	InstallImmediateEmulation();
 
+	if (const char* env = getenv("RECOIL_WEB_GLCHECK"); env != nullptr && atoi(env) != 0) {
+		InstallErrorChecks();
+		real_glGetError = glad_glGetError;
+		glad_glGetError = glcheck_glGetError;
+		LOG("[WebGLCompat::%s] RECOIL_WEB_GLCHECK: glGetError is checked after every GL call", __func__);
+	}
+
 	int numStubbed = 0;
 	for (int i = 0; i < NUM_GL_FUNCS; i++)
 		numStubbed += stubbed[i];
@@ -460,6 +526,7 @@ bool WebGLCompat::Load()
 
 void WebGLCompat::LogStubStats(bool final)
 {
+	LogGLCheckStats(final);
 	{
 		static uint32_t lastRecorded = ~0u, lastFailed = ~0u, lastSkipped = ~0u;
 		uint32_t failed = 0;

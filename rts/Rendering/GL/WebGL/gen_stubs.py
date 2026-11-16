@@ -5,6 +5,8 @@ WebGL2 (GLES 3.0) implements only a subset of the desktop GL entry points glad k
 Emscripten's GetProcAddress returns null for the rest, and calling a null wasm function
 pointer traps. This emits one correctly-typed no-op stub per glad entry point plus a
 table, so WebGLCompat can fill every null pointer and count what the engine calls.
+It also emits a checking wrapper per entry point (installed only with RECOIL_WEB_GLCHECK)
+that reports which call raised a GL error.
 
 usage: gen_stubs.py <glad.h> <out.inc>
 """
@@ -30,6 +32,29 @@ out.append("static const char* const glFuncNames[NUM_GL_FUNCS] = {\n")
 out += [f'\t"{n}",\n' for n, _ in names]
 out.append("};\n\nstatic void FillNullEntryPoints() {\n")
 out += [f"\tif (glad_{n} == nullptr) {{ glad_{n} = stub_{n}; stubbed[{i}] = true; }}\n" for i, (n, _) in enumerate(names)]
+out.append("}\n")
+
+# Debugging aid (RECOIL_WEB_GLCHECK): one wrapper per entry point that calls the pointer
+# glad held when the wrappers were installed, then GLCheckAfter(index), which reads glGetError.
+def param_names(args):
+    if args in ("", "void"):
+        return []
+    return [re.search(r"([A-Za-z_]\w*)\s*(\[\d*\])?$", p.strip()).group(1) for p in args.split(",")]
+
+out.append("\nstatic void* chkReal[NUM_GL_FUNCS];\n")
+for idx, m in enumerate(pat.finditer(src)):
+    ret, args, name, td = m.group("ret").strip(), m.group("args").strip(), m.group("name"), m.group("td")
+    call = f"reinterpret_cast<{td}>(chkReal[{idx}])({', '.join(param_names(args))})"
+    if ret == "void":
+        body = f"{call}; GLCheckAfter({idx});"
+    else:
+        body = f"{ret} r = {call}; GLCheckAfter({idx}); return r;"
+    out.append(f"static {ret} APIENTRY chk_{name}({args}) {{ {body} }}\n")
+out.append("\nstatic void InstallErrorChecks() {\n")
+for i, (n, _) in enumerate(names):
+    if n == "glGetError":
+        continue
+    out.append(f"\tif (!stubbed[{i}]) {{ chkReal[{i}] = reinterpret_cast<void*>(glad_{n}); glad_{n} = chk_{n}; }}\n")
 out.append("}\n")
 open(sys.argv[2], "w").write("".join(out))
 print(f"gen_stubs: {len(names)} GL entry points")
