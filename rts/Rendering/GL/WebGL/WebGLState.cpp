@@ -886,11 +886,63 @@ namespace {
 		}
 	}
 
+	// RECOIL_WEB_TRACE: report draws WebGL rejects, with the program's samplers and the
+	// textures bound to their units (WebGL refuses a draw whose sampler types conflict on a
+	// unit, or whose sampled texture is incomplete or of the wrong target). Debug aid only.
+	REAL(glGetError);
+	const bool traceDrawErrors = (std::getenv("RECOIL_WEB_TRACE") != nullptr);
+	void DescribeProgramSamplers(GLuint program) {
+		GLint n = 0, activeTex = GL_TEXTURE0;
+		glGetProgramiv(program, GL_ACTIVE_UNIFORMS, &n);
+		glGetIntegerv(GL_ACTIVE_TEXTURE, &activeTex);
+		for (GLint i = 0; i < n; i++) {
+			char name[128] = {};
+			GLint size = 0;
+			GLenum type = 0;
+			glGetActiveUniform(program, GLuint(i), sizeof(name), nullptr, &size, &type, name);
+			GLenum binding = 0;
+			switch (type) {
+				case GL_SAMPLER_2D: case GL_SAMPLER_2D_SHADOW: case GL_INT_SAMPLER_2D: case GL_UNSIGNED_INT_SAMPLER_2D: binding = GL_TEXTURE_BINDING_2D; break;
+				case GL_SAMPLER_CUBE: case GL_SAMPLER_CUBE_SHADOW: binding = GL_TEXTURE_BINDING_CUBE_MAP; break;
+				case GL_SAMPLER_3D: binding = GL_TEXTURE_BINDING_3D; break;
+				case GL_SAMPLER_2D_ARRAY: case GL_SAMPLER_2D_ARRAY_SHADOW: binding = GL_TEXTURE_BINDING_2D_ARRAY; break;
+				default: continue;
+			}
+			GLint unit = -1, tex = 0;
+			glGetUniformiv(program, glGetUniformLocation(program, name), &unit);
+			glActiveTexture(GL_TEXTURE0 + GLenum(std::max(unit, 0)));
+			glGetIntegerv(binding, &tex);
+			LOG("[WebGLCompat]   sampler %s type=0x%x unit=%d texture=%d", name, type, unit, tex);
+		}
+		glActiveTexture(GLenum(activeTex));
+	}
+	void CheckDrawError(const char* fn, GLenum mode, GLsizei count) {
+		const GLenum err = real_glGetError();
+		if (err == GL_NO_ERROR)
+			return;
+		static std::vector<std::pair<GLuint, GLenum>> reported;
+		const std::pair<GLuint, GLenum> key{currentProgram, err};
+		if (reported.size() >= 24 || std::find(reported.begin(), reported.end(), key) != reported.end())
+			return;
+		reported.push_back(key);
+		GLint fbo = 0;
+		glGetIntegerv(GL_DRAW_FRAMEBUFFER_BINDING, &fbo);
+		LOG("[WebGLCompat] %s(mode=0x%x, count=%d) raised GL error 0x%x: program=%u fbo=%d", fn, mode, count, err, currentProgram, fbo);
+		if (currentProgram != 0)
+			DescribeProgramSamplers(currentProgram);
+	}
+	struct DrawErrorCheck {
+		DrawErrorCheck(const char* f, GLenum m, GLsizei c): fn(f), mode(m), count(c) { if (traceDrawErrors) { for (int i = 0; i < 8 && real_glGetError() != GL_NO_ERROR; i++) {} } }
+		~DrawErrorCheck() { if (traceDrawErrors) CheckDrawError(fn, mode, count); }
+		const char* fn; GLenum mode; GLsizei count;
+	};
+
 	void APIENTRY compat_glDrawArrays(GLenum mode, GLint first, GLsizei count) {
 		if (WebGLCompat::listCompiling) { WebGLCompat::ListRecordDraw(mode, first, count, 0, nullptr, 0); return; }
 		const FixedFunctionScope ffp;
 		FlushFixedState();
 		if (mode == GL_QUADS) { DrawQuadArrays(first, count, 0); return; }
+		const DrawErrorCheck check("glDrawArrays", mode, count);
 		real_glDrawArrays(MapMode(mode), first, count);
 	}
 	void APIENTRY compat_glDrawArraysInstanced(GLenum mode, GLint first, GLsizei count, GLsizei instances) {
@@ -905,6 +957,7 @@ namespace {
 		const FixedFunctionScope ffp;
 		FlushFixedState();
 		if (mode == GL_QUADS) { skippedQuadElementDraws++; return; }
+		const DrawErrorCheck check("glDrawElements", mode, count);
 		real_glDrawElements(MapMode(mode), count, type, indices);
 	}
 	void APIENTRY compat_glDrawRangeElements(GLenum mode, GLuint start, GLuint end, GLsizei count, GLenum type, const void* indices) {
