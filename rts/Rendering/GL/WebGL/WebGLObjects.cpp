@@ -593,6 +593,85 @@ namespace {
 		real_glRenderbufferStorageMultisampleEXT(target, samples, RenderbufferFormat(internalFormat), w, h);
 	}
 
+	// ---- depth blits ---------------------------------------------------------------------
+	// WebGL2 blits depth only between identical depth/stencil formats. The default framebuffer
+	// has a 24-bit depth and an 8-bit stencil buffer (the context is created with both), while
+	// the engine's depth copies (DepthBufferCopy, read by ground decals and soft particles)
+	// are DEPTH_COMPONENT24 textures: every copy failed with INVALID_OPERATION and the copy
+	// stayed empty. Before a depth blit between the default framebuffer and an FBO whose depth
+	// attachment is such a texture, that texture's storage is re-specified as DEPTH24_STENCIL8
+	// (same name, size and level; it stays attached and samples the same depth values). This
+	// happens once per texture: afterwards the formats match.
+	REAL(glBlitFramebuffer);
+	REAL(glBlitFramebufferEXT);
+
+	GLint AttachmentParam(GLenum target, GLenum attachment, GLenum pname) {
+		GLint v = 0;
+		glGetFramebufferAttachmentParameteriv(target, attachment, pname, &v);
+		return v;
+	}
+
+	void MatchDefaultDepthFormat(GLbitfield mask) {
+		if ((mask & GL_DEPTH_BUFFER_BIT) == 0)
+			return;
+		GLint readFbo = 0, drawFbo = 0;
+		real_glGetIntegerv(GL_READ_FRAMEBUFFER_BINDING, &readFbo);
+		real_glGetIntegerv(GL_DRAW_FRAMEBUFFER_BINDING, &drawFbo);
+		if ((readFbo == 0) == (drawFbo == 0))
+			return;
+		const GLenum defaultTarget = (readFbo == 0)? GL_READ_FRAMEBUFFER: GL_DRAW_FRAMEBUFFER;
+		const GLenum fboTarget = (readFbo == 0)? GL_DRAW_FRAMEBUFFER: GL_READ_FRAMEBUFFER;
+
+		if (AttachmentParam(defaultTarget, GL_DEPTH, GL_FRAMEBUFFER_ATTACHMENT_DEPTH_SIZE) != 24)
+			return;
+		if (AttachmentParam(defaultTarget, GL_STENCIL, GL_FRAMEBUFFER_ATTACHMENT_STENCIL_SIZE) != 8)
+			return;
+		if (AttachmentParam(fboTarget, GL_DEPTH_ATTACHMENT, GL_FRAMEBUFFER_ATTACHMENT_OBJECT_TYPE) != GL_TEXTURE)
+			return;
+		if (AttachmentParam(fboTarget, GL_DEPTH_ATTACHMENT, GL_FRAMEBUFFER_ATTACHMENT_DEPTH_SIZE) != 24)
+			return;
+		if (AttachmentParam(fboTarget, GL_DEPTH_ATTACHMENT, GL_FRAMEBUFFER_ATTACHMENT_STENCIL_SIZE) != 0)
+			return;
+		if (AttachmentParam(fboTarget, GL_DEPTH_ATTACHMENT, GL_FRAMEBUFFER_ATTACHMENT_TEXTURE_CUBE_MAP_FACE) != 0)
+			return;
+
+		const GLuint tex = GLuint(AttachmentParam(fboTarget, GL_DEPTH_ATTACHMENT, GL_FRAMEBUFFER_ATTACHMENT_OBJECT_NAME));
+		const GLint level = AttachmentParam(fboTarget, GL_DEPTH_ATTACHMENT, GL_FRAMEBUFFER_ATTACHMENT_TEXTURE_LEVEL);
+		const auto it = textures.find(tex);
+		if (it == textures.end() || it->second.depth != 1)
+			return;
+		const GLint w = std::max(1, it->second.width >> level);
+		const GLint h = std::max(1, it->second.height >> level);
+
+		GLint unpackBuf = 0;
+		real_glGetIntegerv(GL_PIXEL_UNPACK_BUFFER_BINDING, &unpackBuf);
+		if (unpackBuf != 0)
+			glBindBuffer(GL_PIXEL_UNPACK_BUFFER, 0);
+		real_glBindTexture(GL_TEXTURE_2D, tex);
+		GLint immutable = 0;
+		glGetTexParameteriv(GL_TEXTURE_2D, GL_TEXTURE_IMMUTABLE_FORMAT, &immutable);
+		if (immutable == 0)
+			real_glTexImage2D(GL_TEXTURE_2D, level, GL_DEPTH24_STENCIL8, w, h, 0, GL_DEPTH_STENCIL, GL_UNSIGNED_INT_24_8, nullptr);
+		real_glBindTexture(GL_TEXTURE_2D, boundTex[activeUnit][TGT_2D]);
+		if (unpackBuf != 0)
+			glBindBuffer(GL_PIXEL_UNPACK_BUFFER, GLuint(unpackBuf));
+
+		static int numLogged = 0;
+		if (numLogged++ < 8) {
+			LOG("[WebGLCompat] depth texture %u (%dx%d, level %d) %s to match the default framebuffer for depth blits",
+				tex, w, h, level, (immutable == 0)? "re-specified as DEPTH24_STENCIL8": "is immutable and was left as DEPTH_COMPONENT24");
+		}
+	}
+
+	void APIENTRY compat_glBlitFramebuffer(GLint sx0, GLint sy0, GLint sx1, GLint sy1, GLint dx0, GLint dy0, GLint dx1, GLint dy1, GLbitfield mask, GLenum filter) {
+		MatchDefaultDepthFormat(mask);
+		real_glBlitFramebuffer(sx0, sy0, sx1, sy1, dx0, dy0, dx1, dy1, mask, filter);
+	}
+	void APIENTRY compat_glBlitFramebufferEXT(GLint sx0, GLint sy0, GLint sx1, GLint sy1, GLint dx0, GLint dy0, GLint dx1, GLint dy1, GLbitfield mask, GLenum filter) {
+		MatchDefaultDepthFormat(mask);
+		real_glBlitFramebufferEXT(sx0, sy0, sx1, sy1, dx0, dy0, dx1, dy1, mask, filter);
+	}
+
 	void APIENTRY compat_glGetTexLevelParameteriv(GLenum target, GLint level, GLenum pname, GLint* params) {
 		*params = 0;
 		const TexInfo* t = BoundTexInfo(target);
@@ -724,4 +803,5 @@ void WebGLCompat::InstallObjectEmulation()
 	HOOK(glReadPixels);
 	HOOK(glRenderbufferStorage); HOOK(glRenderbufferStorageEXT);
 	HOOK(glRenderbufferStorageMultisample); HOOK(glRenderbufferStorageMultisampleEXT);
+	HOOK(glBlitFramebuffer); HOOK(glBlitFramebufferEXT);
 }
