@@ -277,6 +277,7 @@ namespace {
 	// ---- glGet for emulated state ---------------------------------------------------------
 	REAL(glGetFloatv);
 	REAL(glGetIntegerv);
+	GLenum polygonMode = GL_FILL; // glPolygonMode, see compat_glPolygonMode
 
 	// GL_CLIP_PLANEi (== GL_CLIP_DISTANCEi) as the engine enabled it. The real WebGL enables
 	// follow the current program (SyncClipDistances) and lag behind glDisable until the next
@@ -302,6 +303,7 @@ namespace {
 			case GL_FOG_END: *data = fog.end; return;
 			case GL_FOG_DENSITY: *data = fog.density; return;
 			case GL_POINT_SIZE: *data = 1.0f; return;
+			case GL_BLEND_SRC: case GL_BLEND_DST: { GLint v = 0; real_glGetIntegerv((pname == GL_BLEND_SRC)? GL_BLEND_SRC_RGB: GL_BLEND_DST_RGB, &v); *data = GLfloat(v); } return;
 			default: break;
 		}
 		real_glGetFloatv(pname, data);
@@ -322,11 +324,15 @@ namespace {
 			case GL_MODELVIEW_STACK_DEPTH: *data = GLint(modelviewStack.stack.size()); return;
 			case GL_PROJECTION_STACK_DEPTH: *data = GLint(projectionStack.stack.size()); return;
 			case GL_CLIENT_ACTIVE_TEXTURE: *data = GL_TEXTURE0 + clientActiveTexUnit; return;
-			case GL_POLYGON_MODE: data[0] = data[1] = GL_FILL; return;
+			case GL_POLYGON_MODE: data[0] = data[1] = GLint(polygonMode); return;
 			case GL_SHADE_MODEL: *data = GL_SMOOTH; return;
 			// nonzero while a display list is compiled; the engine defers texture uploads then
 			case GL_LIST_INDEX: *data = GLint(WebGLCompat::GetCompilingList()); return;
 			case GL_LIST_MODE: *data = GLint(WebGLCompat::GetCompilingListMode()); return;
+			// legacy single-factor blend queries (GL::State's BlendFunc saves and restores
+			// through them); GLES only has the separate RGB/alpha ones
+			case GL_BLEND_SRC: real_glGetIntegerv(GL_BLEND_SRC_RGB, data); return;
+			case GL_BLEND_DST: real_glGetIntegerv(GL_BLEND_DST_RGB, data); return;
 			default: break;
 		}
 		real_glGetIntegerv(pname, data);
@@ -938,6 +944,136 @@ namespace {
 		real_glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, GLuint(prevElemBuf));
 	}
 
+	// ---- glPolygonMode(GL_LINE) -------------------------------------------------------------
+	// WebGL2 has no polygon mode. Triangle draws issued in line mode (unit build stages,
+	// wireframe debug views) become GL_LINES draws over each triangle's three edges, with
+	// an index buffer derived from the draw's own indices. Line buffers are cached per
+	// (element buffer, offset, count, type); any element-buffer data change drops the cache.
+	REAL(glBufferSubData);
+	REAL(glGetBufferSubData);
+	REAL(glDeleteBuffers);
+	uint32_t wireDraws = 0;
+
+	struct WireKey {
+		GLuint buffer; uintptr_t offset; GLsizei count; GLenum type;
+		bool operator==(const WireKey& o) const { return buffer == o.buffer && offset == o.offset && count == o.count && type == o.type; }
+	};
+	struct WireKeyHash { size_t operator()(const WireKey& k) const { return (size_t(k.buffer) * 2654435761u) ^ (k.offset * 40503u) ^ (size_t(k.count) << 7) ^ k.type; } };
+	struct WireEntry { GLuint buffer; GLsizei count; };
+	std::unordered_map<WireKey, WireEntry, WireKeyHash> wireCache;
+	GLuint wireScratchBuffer = 0;
+
+	void ClearWireCache() {
+		for (const auto& [k, e]: wireCache)
+			real_glDeleteBuffers(1, &e.buffer);
+		wireCache.clear();
+	}
+
+	void APIENTRY compat_glPolygonMode(GLenum face, GLenum mode) {
+		LIST(compat_glPolygonMode(face, mode));
+		// only GL_FRONT_AND_BACK is legal in core profiles and the engine uses nothing else
+		polygonMode = (mode == GL_LINE || mode == GL_POINT)? GL_LINE: GL_FILL;
+	}
+	void APIENTRY compat_glBufferData(GLenum target, GLsizeiptr size, const void* data, GLenum usage) {
+		if (target == GL_ELEMENT_ARRAY_BUFFER && !wireCache.empty())
+			ClearWireCache();
+		real_glBufferData(target, size, data, usage);
+	}
+	void APIENTRY compat_glBufferSubData(GLenum target, GLintptr offset, GLsizeiptr size, const void* data) {
+		if (target == GL_ELEMENT_ARRAY_BUFFER && !wireCache.empty())
+			ClearWireCache();
+		real_glBufferSubData(target, offset, size, data);
+	}
+	void APIENTRY compat_glDeleteBuffers(GLsizei n, const GLuint* buffers) {
+		if (!wireCache.empty())
+			ClearWireCache();
+		real_glDeleteBuffers(n, buffers);
+	}
+
+	bool IsWireTriangles(GLenum mode) {
+		return (polygonMode == GL_LINE && (mode == GL_TRIANGLES || mode == GL_TRIANGLE_STRIP || mode == GL_TRIANGLE_FAN));
+	}
+	// the three edges of every triangle the vertex sequence `src` forms in `mode`
+	void TriangleEdges(GLenum mode, const std::vector<GLuint>& src, std::vector<GLuint>& lines) {
+		const size_t n = src.size();
+		auto tri = [&](GLuint a, GLuint b, GLuint c) {
+			lines.insert(lines.end(), {a, b, b, c, c, a});
+		};
+		if (mode == GL_TRIANGLES) {
+			for (size_t i = 0; i + 2 < n; i += 3)
+				tri(src[i], src[i + 1], src[i + 2]);
+		} else if (mode == GL_TRIANGLE_STRIP) {
+			for (size_t i = 0; i + 2 < n; i++)
+				tri(src[i], src[i + 1], src[i + 2]);
+		} else {
+			for (size_t i = 1; i + 1 < n; i++)
+				tri(src[0], src[i], src[i + 1]);
+		}
+	}
+	// draws `mode` in line mode; false if the draw should go ahead filled instead
+	bool DrawWire(GLenum mode, GLint first, GLsizei count, GLenum type, const void* indices, bool indexed) {
+		if (count < 3)
+			return true;
+		GLint elemBuf = 0;
+		real_glGetIntegerv(GL_ELEMENT_ARRAY_BUFFER_BINDING, &elemBuf);
+
+		const WireKey key{indexed? GLuint(elemBuf): 0u, indexed? uintptr_t(indices): uintptr_t(first), count, indexed? (type | (GLenum(mode) << 16)): GLenum(mode)};
+		const bool cacheable = (!indexed || elemBuf != 0);
+		WireEntry entry{0, 0};
+		if (const auto it = wireCache.find(key); cacheable && it != wireCache.end()) {
+			entry = it->second;
+		} else {
+			std::vector<GLuint> src(static_cast<size_t>(count));
+			if (!indexed) {
+				for (GLsizei i = 0; i < count; i++)
+					src[i] = GLuint(first + i);
+			} else {
+				const size_t elemSize = (type == GL_UNSIGNED_BYTE)? 1: ((type == GL_UNSIGNED_SHORT)? 2: 4);
+				std::vector<uint8_t> raw(elemSize * size_t(count));
+				if (elemBuf != 0)
+					real_glGetBufferSubData(GL_ELEMENT_ARRAY_BUFFER, GLintptr(uintptr_t(indices)), GLsizeiptr(raw.size()), raw.data());
+				else if (indices != nullptr)
+					std::memcpy(raw.data(), indices, raw.size());
+				else
+					return false;
+				for (GLsizei i = 0; i < count; i++) {
+					switch (elemSize) {
+						case 1: src[i] = raw[i]; break;
+						case 2: { uint16_t v; std::memcpy(&v, &raw[i * 2], 2); src[i] = v; } break;
+						default: { uint32_t v; std::memcpy(&v, &raw[i * 4], 4); src[i] = v; } break;
+					}
+				}
+			}
+			std::vector<GLuint> lines;
+			lines.reserve(size_t(count) * 2);
+			TriangleEdges(mode, src, lines);
+			if (lines.empty())
+				return true;
+
+			if (cacheable && wireCache.size() >= 512)
+				ClearWireCache();
+			GLuint buf = 0;
+			if (cacheable) {
+				real_glGenBuffers(1, &buf);
+			} else {
+				if (wireScratchBuffer == 0)
+					real_glGenBuffers(1, &wireScratchBuffer);
+				buf = wireScratchBuffer;
+			}
+			real_glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, buf);
+			real_glBufferData(GL_ELEMENT_ARRAY_BUFFER, GLsizeiptr(lines.size() * sizeof(GLuint)), lines.data(), GL_STATIC_DRAW);
+			entry = {buf, GLsizei(lines.size())};
+			if (cacheable)
+				wireCache[key] = entry;
+		}
+
+		real_glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, entry.buffer);
+		real_glDrawElements(GL_LINES, entry.count, GL_UNSIGNED_INT, nullptr);
+		real_glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, GLuint(elemBuf));
+		wireDraws++;
+		return true;
+	}
+
 	// with no shader bound the draw goes through the fixed-function emulation program
 	struct FixedFunctionScope {
 		FixedFunctionScope(): active(currentProgram == 0 && WebGLCompat::BeginFixedFunctionDraw(false)) {}
@@ -983,6 +1119,24 @@ namespace {
 			LOG("[WebGLCompat]   sampler %s type=0x%x unit=%d texture=%d", name, type, unit, tex);
 		}
 		glActiveTexture(GLenum(activeTex));
+
+		// active attributes against the bound VAO's attribute shadow: WebGL2 rejects a draw
+		// whose float/integer attribute kinds disagree, or that reads past a buffer's end
+		GLint na = 0;
+		glGetProgramiv(program, GL_ACTIVE_ATTRIBUTES, &na);
+		for (GLint i = 0; i < na; i++) {
+			char name[128] = {};
+			GLint size = 0;
+			GLenum type = 0;
+			glGetActiveAttrib(program, GLuint(i), sizeof(name), nullptr, &size, &type, name);
+			const GLint loc = glGetAttribLocation(program, name);
+			const AttribShadow* a = (loc >= 0)? Shadow(GLuint(loc)): nullptr;
+			if (a == nullptr)
+				LOG("[WebGLCompat]   attrib %s type=0x%x loc=%d (no shadow)", name, type, loc);
+			else
+				LOG("[WebGLCompat]   attrib %s type=0x%x loc=%d: enabled=%d integer=%d size=%d dataType=0x%x stride=%d divisor=%u buffer=%u offset=%lu",
+					name, type, loc, a->enabled, a->integer, a->size, a->type, a->stride, a->divisor, a->buffer, (unsigned long)a->ptr);
+		}
 	}
 	void CheckDrawError(const char* fn, GLenum mode, GLsizei count) {
 		const GLenum err = real_glGetError();
@@ -1000,7 +1154,19 @@ namespace {
 			DescribeProgramSamplers(currentProgram);
 	}
 	struct DrawErrorCheck {
-		DrawErrorCheck(const char* f, GLenum m, GLsizei c): fn(f), mode(m), count(c) { if (traceDrawErrors) { for (int i = 0; i < 8 && real_glGetError() != GL_NO_ERROR; i++) {} } }
+		// errors pending here were raised before the draw, by the engine or by the shim's own
+		// state flush (FlushFixedState); they are reported as "<fn>, pending before the draw"
+		DrawErrorCheck(const char* f, GLenum m, GLsizei c): fn(f), mode(m), count(c) {
+			if (!traceDrawErrors)
+				return;
+			const GLenum pending = real_glGetError();
+			for (int i = 0; i < 8 && real_glGetError() != GL_NO_ERROR; i++) {}
+			static int numPendingLogged = 0;
+			if (pending != GL_NO_ERROR && numPendingLogged < 24) {
+				numPendingLogged++;
+				LOG("[WebGLCompat] %s(mode=0x%x, count=%d): GL error 0x%x pending before the draw (program=%u)", f, m, c, pending, currentProgram);
+			}
+		}
 		~DrawErrorCheck() { if (traceDrawErrors) CheckDrawError(fn, mode, count); }
 		const char* fn; GLenum mode; GLsizei count;
 	};
@@ -1010,6 +1176,7 @@ namespace {
 		const FixedFunctionScope ffp;
 		FlushFixedState();
 		if (mode == GL_QUADS) { DrawQuadArrays(first, count, 0); return; }
+		if (IsWireTriangles(MapMode(mode)) && DrawWire(MapMode(mode), first, count, 0, nullptr, false)) return;
 		const DrawErrorCheck check("glDrawArrays", mode, count);
 		real_glDrawArrays(MapMode(mode), first, count);
 	}
@@ -1018,6 +1185,7 @@ namespace {
 		const FixedFunctionScope ffp;
 		FlushFixedState();
 		if (mode == GL_QUADS) { DrawQuadArrays(first, count, instances); return; }
+		const DrawErrorCheck check("glDrawArraysInstanced", mode, count);
 		real_glDrawArraysInstanced(MapMode(mode), first, count, instances);
 	}
 	void APIENTRY compat_glDrawElements(GLenum mode, GLsizei count, GLenum type, const void* indices) {
@@ -1025,6 +1193,7 @@ namespace {
 		const FixedFunctionScope ffp;
 		FlushFixedState();
 		if (mode == GL_QUADS) { skippedQuadElementDraws++; return; }
+		if (IsWireTriangles(MapMode(mode)) && DrawWire(MapMode(mode), 0, count, type, indices, true)) return;
 		const DrawErrorCheck check("glDrawElements", mode, count);
 		real_glDrawElements(MapMode(mode), count, type, indices);
 	}
@@ -1033,6 +1202,7 @@ namespace {
 		const FixedFunctionScope ffp;
 		FlushFixedState();
 		if (mode == GL_QUADS) { skippedQuadElementDraws++; return; }
+		if (IsWireTriangles(MapMode(mode)) && DrawWire(MapMode(mode), 0, count, type, indices, true)) return;
 		real_glDrawRangeElements(MapMode(mode), start, end, count, type, indices);
 	}
 	void APIENTRY compat_glDrawElementsInstanced(GLenum mode, GLsizei count, GLenum type, const void* indices, GLsizei instances) {
@@ -1040,6 +1210,7 @@ namespace {
 		const FixedFunctionScope ffp;
 		FlushFixedState();
 		if (mode == GL_QUADS) { skippedQuadElementDraws++; return; }
+		const DrawErrorCheck check("glDrawElementsInstanced", mode, count);
 		real_glDrawElementsInstanced(MapMode(mode), count, type, indices, instances);
 	}
 	void APIENTRY compat_glMultiDrawArrays(GLenum mode, const GLint* first, const GLsizei* count, GLsizei drawcount) {
@@ -1248,7 +1419,7 @@ void WebGLCompat::InstallStateEmulation()
 	EMULATE(glMultiDrawArrays); EMULATE(glMultiDrawElements);
 	EMULATE(glPushAttrib); EMULATE(glPopAttrib);
 	EMULATE(glClearDepth); EMULATE(glDepthRange); EMULATE(glDrawBuffer);
-	EMULATE(glBindFragDataLocation); EMULATE(glClipPlane);
+	EMULATE(glBindFragDataLocation); EMULATE(glClipPlane); EMULATE(glPolygonMode);
 	#undef EMULATE
 
 	HOOK(glActiveTexture);
@@ -1268,12 +1439,13 @@ void WebGLCompat::InstallStateEmulation()
 
 	HOOK(glDrawArrays); HOOK(glDrawElements); HOOK(glDrawRangeElements);
 	HOOK(glDrawArraysInstanced); HOOK(glDrawElementsInstanced);
+	HOOK(glBufferData); HOOK(glBufferSubData); HOOK(glDeleteBuffers);
 
 	// real WebGL2 functions the emulation calls
 	#define KEEP(name) real_##name = glad_##name
 	KEEP(glCompileShader); KEEP(glBindAttribLocation);
 	KEEP(glUniformMatrix4fv); KEEP(glUniformMatrix3fv); KEEP(glUniform4fv); KEEP(glUniform1f); KEEP(glUniform1i); KEEP(glUniform2fv); KEEP(glUniform3fv);
-	KEEP(glGenBuffers); KEEP(glBindBuffer); KEEP(glBufferData);
+	KEEP(glGenBuffers); KEEP(glBindBuffer); KEEP(glGetBufferSubData);
 	KEEP(glBlendFuncSeparate); KEEP(glBlendEquationSeparate); KEEP(glColorMask);
 	KEEP(glDepthFunc); KEEP(glDepthMask); KEEP(glCullFace); KEEP(glFrontFace); KEEP(glPolygonOffset);
 	KEEP(glViewport); KEEP(glScissor); KEEP(glLineWidth); KEEP(glStencilMask);

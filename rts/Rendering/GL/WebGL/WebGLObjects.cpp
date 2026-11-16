@@ -672,6 +672,90 @@ namespace {
 		real_glBlitFramebufferEXT(sx0, sy0, sx1, sy1, dx0, dy0, dx1, dy1, mask, filter);
 	}
 
+	// ---- depth copies (glCopyTexSubImage2D into a depth texture) -------------------------
+	// Desktop GL copies the read framebuffer's depth into a depth texture this way (Lua
+	// gl.CopyToTexture: BAR's depth of field and volumetric clouds). WebGL2 only copies
+	// colour. The copy becomes a depth blit into a scratch FBO with the texture attached;
+	// as for engine blits, a texture whose depth/stencil layout doesn't match the default
+	// framebuffer's 24/8 is re-specified as DEPTH24_STENCIL8 first (once per texture).
+	REAL(glCopyTexSubImage2D);
+	GLuint depthCopyFbo = 0;
+	uint32_t depthCopies = 0;
+
+	bool IsDepthFormat(GLenum f) {
+		switch (f) {
+			case GL_DEPTH_COMPONENT: case GL_DEPTH_COMPONENT16: case GL_DEPTH_COMPONENT24: case GL_DEPTH_COMPONENT32:
+			case GL_DEPTH_COMPONENT32F: case GL_DEPTH_STENCIL: case GL_DEPTH24_STENCIL8: case GL_DEPTH32F_STENCIL8:
+				return true;
+			default:
+				return false;
+		}
+	}
+
+	bool CopyDepthToTexture(GLenum target, GLint level, GLint xoff, GLint yoff, GLint x, GLint y, GLsizei w, GLsizei h) {
+		if (target != GL_TEXTURE_2D)
+			return false;
+		const GLuint tex = boundTex[activeUnit][TGT_2D];
+		const auto it = textures.find(tex);
+		if (tex == 0 || it == textures.end() || !IsDepthFormat(it->second.internalFormat))
+			return false;
+
+		GLint readFbo = 0, drawFbo = 0;
+		real_glGetIntegerv(GL_READ_FRAMEBUFFER_BINDING, &readFbo);
+		real_glGetIntegerv(GL_DRAW_FRAMEBUFFER_BINDING, &drawFbo);
+		if (depthCopyFbo == 0)
+			glGenFramebuffers(1, &depthCopyFbo);
+		glBindFramebuffer(GL_DRAW_FRAMEBUFFER, depthCopyFbo);
+		glFramebufferTexture2D(GL_DRAW_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, GL_TEXTURE_2D, tex, level);
+
+		// the read side's layout; for the default framebuffer that's 24/8
+		const GLenum readAtt = (readFbo == 0)? GL_DEPTH: GL_DEPTH_ATTACHMENT;
+		const GLenum readStencilAtt = (readFbo == 0)? GL_STENCIL: GL_DEPTH_ATTACHMENT;
+		const GLint srcDepth = AttachmentParam(GL_READ_FRAMEBUFFER, readAtt, GL_FRAMEBUFFER_ATTACHMENT_DEPTH_SIZE);
+		const GLint srcStencil = AttachmentParam(GL_READ_FRAMEBUFFER, readStencilAtt, GL_FRAMEBUFFER_ATTACHMENT_STENCIL_SIZE);
+		const GLint dstDepth = AttachmentParam(GL_DRAW_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, GL_FRAMEBUFFER_ATTACHMENT_DEPTH_SIZE);
+		const GLint dstStencil = AttachmentParam(GL_DRAW_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, GL_FRAMEBUFFER_ATTACHMENT_STENCIL_SIZE);
+
+		if (srcDepth == 24 && srcStencil == 8 && (dstDepth != 24 || dstStencil != 8)) {
+			GLint immutable = 0;
+			glGetTexParameteriv(GL_TEXTURE_2D, GL_TEXTURE_IMMUTABLE_FORMAT, &immutable);
+			if (immutable == 0) {
+				GLint unpackBuf = 0;
+				real_glGetIntegerv(GL_PIXEL_UNPACK_BUFFER_BINDING, &unpackBuf);
+				if (unpackBuf != 0)
+					glBindBuffer(GL_PIXEL_UNPACK_BUFFER, 0);
+				const GLint lw = std::max(1, it->second.width >> level);
+				const GLint lh = std::max(1, it->second.height >> level);
+				real_glTexImage2D(GL_TEXTURE_2D, level, GL_DEPTH24_STENCIL8, lw, lh, 0, GL_DEPTH_STENCIL, GL_UNSIGNED_INT_24_8, nullptr);
+				if (unpackBuf != 0)
+					glBindBuffer(GL_PIXEL_UNPACK_BUFFER, GLuint(unpackBuf));
+				glFramebufferTexture2D(GL_DRAW_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, GL_TEXTURE_2D, tex, level);
+				static int numLogged = 0;
+				if (numLogged++ < 8)
+					LOG("[WebGLCompat] depth copy: texture %u (%dx%d, 0x%x) re-specified as DEPTH24_STENCIL8 to match the read framebuffer", tex, lw, lh, it->second.internalFormat);
+			}
+		}
+
+		// glBlitFramebuffer honours the scissor test; glCopyTexSubImage2D's source rect doesn't
+		const GLboolean scissor = glIsEnabled(GL_SCISSOR_TEST);
+		if (scissor)
+			glDisable(GL_SCISSOR_TEST);
+		real_glBlitFramebuffer(x, y, x + w, y + h, xoff, yoff, xoff + w, yoff + h, GL_DEPTH_BUFFER_BIT, GL_NEAREST);
+		if (scissor)
+			glEnable(GL_SCISSOR_TEST);
+
+		glFramebufferTexture2D(GL_DRAW_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, GL_TEXTURE_2D, 0, 0);
+		glBindFramebuffer(GL_DRAW_FRAMEBUFFER, GLuint(drawFbo));
+		depthCopies++;
+		return true;
+	}
+
+	void APIENTRY compat_glCopyTexSubImage2D(GLenum target, GLint level, GLint xoff, GLint yoff, GLint x, GLint y, GLsizei w, GLsizei h) {
+		if (CopyDepthToTexture(target, level, xoff, yoff, x, y, w, h))
+			return;
+		real_glCopyTexSubImage2D(target, level, xoff, yoff, x, y, w, h);
+	}
+
 	void APIENTRY compat_glGetTexLevelParameteriv(GLenum target, GLint level, GLenum pname, GLint* params) {
 		*params = 0;
 		const TexInfo* t = BoundTexInfo(target);
@@ -711,8 +795,23 @@ namespace {
 				return false;
 		}
 	}
-	void APIENTRY compat_glTexParameteri(GLenum target, GLenum pname, GLint param) { if (FixTexParam(pname, param)) real_glTexParameteri(target, pname, param); }
+	// desktop GL has a default texture object (name 0) whose parameters can be set;
+	// WebGL2 has none and raises INVALID_OPERATION. The engine resets sampler state
+	// after binding 0 (CShadowHandler::ResetShadowTexSampler), which only touches that
+	// default object, so dropping the call there changes nothing that is ever sampled.
+	bool NoTextureBound(GLenum target) {
+		const int idx = TargetIndex(target);
+		return (idx >= 0 && !WebGLCompat::listCompiling && boundTex[activeUnit][idx] == 0);
+	}
+	void APIENTRY compat_glTexParameteri(GLenum target, GLenum pname, GLint param) {
+		if (NoTextureBound(target))
+			return;
+		if (FixTexParam(pname, param))
+			real_glTexParameteri(target, pname, param);
+	}
 	void APIENTRY compat_glTexParameterf(GLenum target, GLenum pname, GLfloat param) {
+		if (NoTextureBound(target))
+			return;
 		GLint i = GLint(param);
 		if (!FixTexParam(pname, i))
 			return;
@@ -727,11 +826,33 @@ namespace {
 				t->alphaSplat = (params[0] == GL_ALPHA && params[1] == GL_ALPHA && params[2] == GL_ALPHA && params[3] == GL_ALPHA);
 			return;
 		}
+		if (NoTextureBound(target))
+			return;
 		GLint p = params[0];
 		if (FixTexParam(pname, p))
 			real_glTexParameteri(target, pname, p);
 	}
 	void APIENTRY compat_glTexParameterfv(GLenum target, GLenum pname, const GLfloat* params) { compat_glTexParameterf(target, pname, params[0]); }
+
+	// WebGL2 can't generate mipmaps for compressed textures (INVALID_OPERATION). The
+	// engine asks for them on DDS files without embedded levels (CBitmap::CreateDDSTexture,
+	// S3O model textures) after setting a mipmapped min filter, which leaves a single-level
+	// texture incomplete: it samples as black. Limit such textures to level 0 instead, so
+	// they stay complete under any min filter (no minification smoothing, but correct texels).
+	REAL(glGenerateMipmap);
+	REAL(glGenerateMipmapEXT);
+	bool CompressedMipmapFallback(GLenum target) {
+		const TexInfo* t = BoundTexInfo(target);
+		if (t == nullptr || !t->compressed)
+			return false;
+		real_glTexParameteri(target, GL_TEXTURE_MAX_LEVEL, 0);
+		static int logged = 0;
+		if (logged++ < 4)
+			LOG_L(L_WARNING, "[WebGL] glGenerateMipmap on a compressed texture (%dx%d, 0x%x): limited to level 0", t->width, t->height, t->internalFormat);
+		return true;
+	}
+	void APIENTRY compat_glGenerateMipmap(GLenum target) { if (!CompressedMipmapFallback(target)) real_glGenerateMipmap(target); }
+	void APIENTRY compat_glGenerateMipmapEXT(GLenum target) { if (!CompressedMipmapFallback(target)) real_glGenerateMipmapEXT(target); }
 
 	// GL_FLOAT readback (Lua's gl.ReadPixels) of a framebuffer WebGL2 only reads as
 	// RGBA/UNSIGNED_BYTE: read bytes and convert
@@ -797,11 +918,16 @@ void WebGLCompat::InstallObjectEmulation()
 	HOOK(glTexImage2D); HOOK(glTexImage3D); HOOK(glTexSubImage2D);
 	HOOK(glTexStorage2D); HOOK(glTexStorage3D);
 	HOOK(glCompressedTexImage2D); HOOK(glCopyTexImage2D);
+	// nv_dds (DDS model/feature textures) uploads through the ARB alias, a separate glad
+	// pointer: route it through the same bookkeeping (compressed flag for glGenerateMipmap)
+	glad_glCompressedTexImage2DARB = compat_glCompressedTexImage2D;
 	HOOK(glTexParameteri); HOOK(glTexParameterf); HOOK(glTexParameteriv); HOOK(glTexParameterfv);
+	HOOK(glGenerateMipmap); HOOK(glGenerateMipmapEXT);
 	glad_glGetTexLevelParameteriv = compat_glGetTexLevelParameteriv;
 	glad_glGetTexLevelParameterfv = compat_glGetTexLevelParameterfv;
 	HOOK(glReadPixels);
 	HOOK(glRenderbufferStorage); HOOK(glRenderbufferStorageEXT);
 	HOOK(glRenderbufferStorageMultisample); HOOK(glRenderbufferStorageMultisampleEXT);
 	HOOK(glBlitFramebuffer); HOOK(glBlitFramebufferEXT);
+	HOOK(glCopyTexSubImage2D);
 }

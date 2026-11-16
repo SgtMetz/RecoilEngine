@@ -321,7 +321,6 @@ void main() {
 	void APIENTRY compat_glPointParameterfv(GLenum, const GLfloat*) {}
 	void APIENTRY compat_glLogicOp(GLenum) {}
 	void APIENTRY compat_glLineStipple(GLint, GLushort) {}
-	void APIENTRY compat_glPolygonMode(GLenum, GLenum) {}
 
 	// ---- display lists ----------------------------------------------------------------------
 	struct DisplayList { std::vector<std::function<void()>> cmds; };
@@ -700,7 +699,7 @@ void WebGLCompat::InstallImmediateEmulation()
 	EMULATE(glMaterialf); EMULATE(glMaterialfv);
 	EMULATE(glTexEnvi); EMULATE(glTexEnvf); EMULATE(glTexEnvfv);
 	EMULATE(glPointParameterf); EMULATE(glPointParameterfv);
-	EMULATE(glLogicOp); EMULATE(glLineStipple); EMULATE(glPolygonMode);
+	EMULATE(glLogicOp); EMULATE(glLineStipple);
 	EMULATE(glGenLists); EMULATE(glNewList); EMULATE(glEndList); EMULATE(glCallList); EMULATE(glDeleteLists); EMULATE(glIsList);
 	#undef EMULATE
 
