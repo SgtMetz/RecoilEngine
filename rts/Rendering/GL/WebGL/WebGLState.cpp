@@ -308,6 +308,7 @@ namespace {
 	struct ShaderInfo {
 		bool isVertex = false;
 		bool translated = false;
+		bool deletePending = false; // glDeleteShader'd while still attached to a program
 		std::string origSource;
 		uint32_t varyingsUsed = 0;
 		uint32_t attribsUsed = 0;
@@ -359,8 +360,10 @@ namespace {
 		if (type != GL_VERTEX_SHADER && type != GL_FRAGMENT_SHADER)
 			return 0;
 		const GLuint id = real_glCreateShader(type);
-		if (id != 0)
+		if (id != 0) {
+			shaders[id] = {};
 			shaders[id].isVertex = (type == GL_VERTEX_SHADER);
+		}
 		return id;
 	}
 
@@ -434,7 +437,34 @@ namespace {
 		SetTranslatedSource(shader, info, 0);
 	}
 
-	void APIENTRY compat_glDeleteShader(GLuint shader) { shaders.erase(shader); real_glDeleteShader(shader); }
+	// GL keeps a deleted shader alive while a program has it attached, and the engine's
+	// GLSLProgramObject::Reload deletes its shader objects before glLinkProgram. The shim
+	// needs them at link time (attribute bindings, varyings, uniform initializers, sampler
+	// units, and recompiling a stage), but Emscripten drops a deleted shader's handle at
+	// once. So the shim defers the deletion until the shader is no longer attached.
+	bool IsAttached(GLuint shader) {
+		for (const auto& [id, prog]: programs) {
+			if (std::find(prog.shaders.begin(), prog.shaders.end(), shader) != prog.shaders.end())
+				return true;
+		}
+		return false;
+	}
+	void ReleaseShaderInfo(GLuint shader) {
+		const auto it = shaders.find(shader);
+		if (it == shaders.end() || !it->second.deletePending || IsAttached(shader))
+			return;
+		shaders.erase(it);
+		real_glDeleteShader(shader);
+	}
+	void APIENTRY compat_glDeleteShader(GLuint shader) {
+		const auto it = shaders.find(shader);
+		if (it == shaders.end()) {
+			real_glDeleteShader(shader);
+			return;
+		}
+		it->second.deletePending = true;
+		ReleaseShaderInfo(shader);
+	}
 
 	GLuint APIENTRY compat_glCreateProgram() {
 		const GLuint id = real_glCreateProgram();
@@ -457,6 +487,7 @@ namespace {
 		if (const auto it = programs.find(program); it != programs.end())
 			std::erase(it->second.shaders, shader);
 		real_glDetachShader(program, shader);
+		ReleaseShaderInfo(shader);
 	}
 
 	void APIENTRY compat_glLinkProgram(GLuint program) {
@@ -596,7 +627,12 @@ namespace {
 	void APIENTRY compat_glUseProgram(GLuint program) { LIST(compat_glUseProgram(program)); currentProgram = program; real_glUseProgram(program); }
 
 	void APIENTRY compat_glDeleteProgram(GLuint program) {
+		std::vector<GLuint> attached;
+		if (const auto it = programs.find(program); it != programs.end())
+			attached = it->second.shaders;
 		programs.erase(program);
+		for (const GLuint id: attached)
+			ReleaseShaderInfo(id);
 		if (currentProgram == program)
 			currentProgram = 0;
 		real_glDeleteProgram(program);
