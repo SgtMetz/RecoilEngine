@@ -250,8 +250,22 @@ namespace {
 	REAL(glEnable);
 	REAL(glDisable);
 	REAL(glIsEnabled);
-	void APIENTRY compat_glEnable(GLenum cap) { LIST(compat_glEnable(cap)); if (IsNativeCap(cap)) real_glEnable(cap); else localCaps[cap] = true; }
-	void APIENTRY compat_glDisable(GLenum cap) { LIST(compat_glDisable(cap)); if (IsNativeCap(cap)) real_glDisable(cap); else localCaps[cap] = false; }
+	// ---- user clip planes (GL_CLIP_PLANEi == GL_CLIP_DISTANCEi) ---------------------------
+	// glClipPlane stores the plane in eye space (transformed by the inverse modelview at call
+	// time); translated vertex shaders compute gl_ClipDistance against rcl_ClipPlane[]. The
+	// real WebGL clip distances are enabled only while the bound program writes them: with
+	// a shader that doesn't, desktop clipping is undefined and WebGL would read garbage.
+	constexpr int NUM_CLIP_PLANES = WebGLCompat::NUM_CLIP_PLANES;
+	float clipPlanes[NUM_CLIP_PLANES][4] = {};
+	uint32_t clipPlanesEnabled = 0; // as the engine set them
+	uint32_t clipDistancesReal = 0; // as set on the WebGL context
+
+	uint32_t ClipPlaneBit(GLenum cap) {
+		return (cap >= GL_CLIP_PLANE0 && cap < GL_CLIP_PLANE0 + NUM_CLIP_PLANES)? (1u << (cap - GL_CLIP_PLANE0)): 0u;
+	}
+
+	void APIENTRY compat_glEnable(GLenum cap) { LIST(compat_glEnable(cap)); if (IsNativeCap(cap)) real_glEnable(cap); else { localCaps[cap] = true; clipPlanesEnabled |= ClipPlaneBit(cap); } }
+	void APIENTRY compat_glDisable(GLenum cap) { LIST(compat_glDisable(cap)); if (IsNativeCap(cap)) real_glDisable(cap); else { localCaps[cap] = false; clipPlanesEnabled &= ~ClipPlaneBit(cap); } }
 	GLboolean APIENTRY compat_glIsEnabled(GLenum cap) {
 		if (IsNativeCap(cap))
 			return real_glIsEnabled(cap);
@@ -314,6 +328,7 @@ namespace {
 		uint32_t attribsUsed = 0;
 		int numFragOutputs = 0;
 		std::vector<WebGLCompat::UniformDefault> uniformDefaults;
+		bool writesClipDistance = false; // vertex stage with real gl_ClipDistance outputs
 		// explicit layout(binding) of the cross-compiled source (GLSL ES 3.00 has none)
 		std::vector<std::pair<std::string, int>> samplerBindings;
 		std::vector<std::pair<std::string, int>> blockBindings;
@@ -324,11 +339,13 @@ namespace {
 		GLuint ffVertexShader = 0; // generated for fragment-only programs (see compat_glLinkProgram)
 		bool linked = false;
 		bool hasBuiltins = false;
+		bool writesClipDistance = false;
 		uint32_t stateStamp = 0;
 		GLint locModelView = -1, locProjection = -1, locMVP = -1, locNormal = -1;
 		GLint locModelViewInv = -1, locProjectionInv = -1, locMVPInv = -1, locTexture = -1;
 		GLint locFogColor = -1, locFogDensity = -1, locFogStart = -1, locFogEnd = -1, locFogScale = -1;
 		GLint locLightAmbient[2] = {-1, -1}, locLightDiffuse[2] = {-1, -1}, locLightSpecular[2] = {-1, -1}, locLightPosition[2] = {-1, -1};
+		GLint locClipPlane = -1;
 	};
 
 	std::unordered_map<GLuint, ShaderInfo> shaders;
@@ -374,6 +391,7 @@ namespace {
 		info.varyingsUsed = xl.varyingsUsed;
 		info.attribsUsed = xl.attribsUsed;
 		info.uniformDefaults = xl.uniformDefaults;
+		info.writesClipDistance = xl.writesClipDistance;
 		info.samplerBindings.clear();
 		info.blockBindings.clear();
 		info.translated = true;
@@ -589,6 +607,7 @@ namespace {
 		prog.linked = (ok != 0);
 		prog.stateStamp = 0;
 		prog.hasBuiltins = false;
+		prog.writesClipDistance = (vs != nullptr && vs->writesClipDistance);
 		if (!prog.linked)
 			return;
 
@@ -649,6 +668,7 @@ namespace {
 			prog.locLightSpecular[i] = loc((base + "specular").c_str());
 			prog.locLightPosition[i] = loc((base + "position").c_str());
 		}
+		prog.locClipPlane = loc("rcl_ClipPlane[0]");
 	}
 
 	void APIENTRY compat_glValidateProgram(GLuint program) {}
@@ -694,14 +714,47 @@ namespace {
 		return real_glGetUniformLocation(program, name);
 	}
 
+	void SyncClipDistances(const ProgramInfo* p) {
+		if (!WebGLCompat::HaveClipDistanceSupport())
+			return;
+		const uint32_t want = (p != nullptr && p->writesClipDistance)? clipPlanesEnabled: 0u;
+		if (want == clipDistancesReal)
+			return;
+		for (int i = 0; i < NUM_CLIP_PLANES; i++) {
+			const uint32_t bit = 1u << i;
+			if ((want & bit) == (clipDistancesReal & bit))
+				continue;
+			if (want & bit) real_glEnable(GL_CLIP_PLANE0 + i); else real_glDisable(GL_CLIP_PLANE0 + i);
+		}
+		clipDistancesReal = want;
+	}
+
+	void APIENTRY compat_glClipPlane(GLenum plane, const GLdouble* equation) {
+		const double eq[4] = {equation[0], equation[1], equation[2], equation[3]};
+		LIST(compat_glClipPlane(plane, eq));
+		const int i = int(plane) - GL_CLIP_PLANE0;
+		if (i < 0 || i >= NUM_CLIP_PLANES)
+			return;
+		// row vector times the inverse modelview (column-major: element (r, c) = m[c * 4 + r])
+		const Mat4 inv = Inverse(modelviewStack.Top());
+		for (int c = 0; c < 4; c++)
+			clipPlanes[i][c] = float(eq[0] * inv.m[c * 4 + 0] + eq[1] * inv.m[c * 4 + 1] + eq[2] * inv.m[c * 4 + 2] + eq[3] * inv.m[c * 4 + 3]);
+		fixedStateStamp++;
+	}
+
 	// upload the fixed-function state the current program's shaders read
 	void FlushFixedState() {
-		if (currentProgram == 0)
+		if (currentProgram == 0) {
+			SyncClipDistances(nullptr);
 			return;
+		}
 		const auto it = programs.find(currentProgram);
-		if (it == programs.end())
+		if (it == programs.end()) {
+			SyncClipDistances(nullptr);
 			return;
+		}
 		ProgramInfo& p = it->second;
+		SyncClipDistances(&p);
 		if (!p.hasBuiltins || p.stateStamp == fixedStateStamp)
 			return;
 		p.stateStamp = fixedStateStamp;
@@ -726,6 +779,7 @@ namespace {
 			}
 		}
 		if (p.locProjectionInv >= 0) real_glUniformMatrix4fv(p.locProjectionInv, 1, GL_FALSE, Inverse(pr).m);
+		if (p.locClipPlane >= 0) real_glUniform4fv(p.locClipPlane, NUM_CLIP_PLANES, &clipPlanes[0][0]);
 		if (p.locTexture >= 0) {
 			float tex[4 * 16];
 			for (int i = 0; i < 4; i++)
@@ -1084,6 +1138,12 @@ namespace {
 
 		if (mask & GL_ENABLE_BIT) {
 			localCaps = s.local;
+			clipPlanesEnabled = 0;
+			for (int i = 0; i < NUM_CLIP_PLANES; i++) {
+				const auto it = localCaps.find(GL_CLIP_PLANE0 + i);
+				if (it != localCaps.end() && it->second)
+					clipPlanesEnabled |= (1u << i);
+			}
 			SetCap(GL_BLEND, s.blend);
 			SetCap(GL_CULL_FACE, s.cullFace);
 			SetCap(GL_DEPTH_TEST, s.depthTest);
@@ -1173,7 +1233,7 @@ void WebGLCompat::InstallStateEmulation()
 	EMULATE(glMultiDrawArrays); EMULATE(glMultiDrawElements);
 	EMULATE(glPushAttrib); EMULATE(glPopAttrib);
 	EMULATE(glClearDepth); EMULATE(glDepthRange); EMULATE(glDrawBuffer);
-	EMULATE(glBindFragDataLocation);
+	EMULATE(glBindFragDataLocation); EMULATE(glClipPlane);
 	#undef EMULATE
 
 	HOOK(glActiveTexture);

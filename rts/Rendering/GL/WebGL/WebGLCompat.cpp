@@ -291,6 +291,11 @@ void* WebGLCompat::CreateContext()
 		return nullptr;
 	}
 
+	// user clip planes (unit build stages, Lua gl.ClipPlane); without it they are ignored
+	const bool clipDistance = emscripten_webgl_enable_extension(handle, "WEBGL_clip_cull_distance");
+	SetClipDistanceSupport(clipDistance);
+	LOG("[WebGLCompat::%s] WEBGL_clip_cull_distance: %s", __func__, clipDistance? "enabled (user clip planes)": "unavailable (user clip planes ignored)");
+
 	return reinterpret_cast<void*>(handle);
 }
 

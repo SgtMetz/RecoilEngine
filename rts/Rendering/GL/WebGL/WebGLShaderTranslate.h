@@ -47,7 +47,16 @@ namespace WebGLCompat {
 		uint32_t attribsUsed = 0;   // bit n set: generic attribute n is a fixed-function built-in
 		int glslVersion = 110;      // version the original source asked for
 		int numFragOutputs = 0;     // (fragment) user-declared outputs without a layout qualifier
+		bool writesClipDistance = false; // (vertex) writes gl_ClipDistance, natively or for gl_ClipVertex
 	};
+
+	// User clip planes (WEBGL_clip_cull_distance, enabled by CreateContext when available).
+	// With support, a vertex shader writing gl_ClipVertex also writes
+	// gl_ClipDistance[i] = dot(gl_ClipVertex, rcl_ClipPlane[i]) for each emulated plane, and
+	// one writing gl_ClipDistance keeps it; without, both outputs are discarded.
+	constexpr int NUM_CLIP_PLANES = 6;
+	void SetClipDistanceSupport(bool supported);
+	bool HaveClipDistanceSupport();
 
 	// isVertex: vertex stage, otherwise fragment
 	// forceVaryings: (vertex stage) also declare these CompatVaryings, because the

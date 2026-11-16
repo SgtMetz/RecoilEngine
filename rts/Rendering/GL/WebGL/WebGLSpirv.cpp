@@ -167,6 +167,20 @@ bool WebGLCompat::CrossCompile(bool isVertex, const std::string& desktopSrc, Cro
 		}
 
 		out.source = compiler.compile();
+
+		// WebGL exposes clip distances as WEBGL_clip_cull_distance, whose shader extension
+		// is GL_ANGLE_clip_cull_distance (SPIRV-Cross requests the GLES name)
+		if (out.source.find("gl_ClipDistance") != std::string::npos) {
+			const std::string ext = "#extension GL_ANGLE_clip_cull_distance : require\n";
+			for (size_t p = out.source.find("#extension GL_EXT_clip_cull_distance"); p != std::string::npos; p = out.source.find("#extension GL_EXT_clip_cull_distance")) {
+				const size_t e = out.source.find('\n', p);
+				out.source.erase(p, (e == std::string::npos)? std::string::npos: e - p + 1);
+			}
+			if (out.source.find(ext) == std::string::npos) {
+				const size_t nl = out.source.find('\n');
+				out.source.insert((nl == std::string::npos)? out.source.size(): nl + 1, ext);
+			}
+		}
 	} catch (const std::exception& e) {
 		out.log = std::string("SPIRV-Cross: ") + e.what();
 		numFailed++;

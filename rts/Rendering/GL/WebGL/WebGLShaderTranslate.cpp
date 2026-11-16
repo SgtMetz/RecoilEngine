@@ -372,6 +372,13 @@ namespace {
 }
 
 
+namespace {
+	bool clipDistanceSupport = false;
+}
+
+void WebGLCompat::SetClipDistanceSupport(bool supported) { clipDistanceSupport = supported; }
+bool WebGLCompat::HaveClipDistanceSupport() { return clipDistanceSupport; }
+
 WebGLCompat::ShaderTranslation WebGLCompat::TranslateShader(bool isVertex, const std::string& src, uint32_t forceVaryings, const std::vector<std::pair<std::string, int>>* fragOutputBindings, bool forGlslang)
 {
 	ShaderTranslation res;
@@ -406,6 +413,8 @@ WebGLCompat::ShaderTranslation WebGLCompat::TranslateShader(bool isVertex, const
 		pre += "#version " + std::to_string(version) + " core\n";
 	} else {
 		pre += "#version 300 es\n";
+		if (isVertex && clipDistanceSupport && (HasIdent(s, "gl_ClipVertex") || HasIdent(s, "gl_ClipDistance")))
+			pre += "#extension GL_ANGLE_clip_cull_distance : require\n";
 		pre += "precision highp float;\nprecision highp int;\n";
 		for (const char* samplerType: {
 			"sampler2D", "sampler3D", "samplerCube", "sampler2DArray",
@@ -501,9 +510,29 @@ WebGLCompat::ShaderTranslation WebGLCompat::TranslateShader(bool isVertex, const
 			{"gl_ClipVertex", "vec4 rcl_ClipVertex;\n"},
 			{"gl_ClipDistance", "float rcl_ClipDistance[8];\n"},
 		};
+		bool clipVertex = false;
+		if (clipDistanceSupport) {
+			// real clipping: gl_ClipDistance stays, gl_ClipVertex is turned into distances
+			// against the planes the shim tracks (in eye space, like desktop glClipPlane)
+			res.writesClipDistance = HasIdent(s, "gl_ClipDistance");
+			clipVertex = (ReplaceIdent(s, "gl_ClipVertex", "rcl_ClipVertex") > 0);
+			if (clipVertex) {
+				pre += "vec4 rcl_ClipVertex = vec4(0.0, 0.0, 0.0, 1.0);\n";
+				pre += "uniform vec4 rcl_ClipPlane[" + std::to_string(NUM_CLIP_PLANES) + "];\n";
+				ReplaceIdent(s, "main", "rcl_main");
+				res.writesClipDistance = true;
+			}
+		}
 		for (const auto& [name, decl]: sinks) {
 			if (ReplaceIdent(s, name, std::string("rcl_") + std::string(name.substr(3))) > 0)
 				pre += decl;
+		}
+		if (clipVertex) {
+			// after the shader's own main (which may return early)
+			s += "\nvoid main() {\n\trcl_main();\n";
+			for (int i = 0; i < NUM_CLIP_PLANES; i++)
+				s += "\tgl_ClipDistance[" + std::to_string(i) + "] = dot(rcl_ClipVertex, rcl_ClipPlane[" + std::to_string(i) + "]);\n";
+			s += "}\n";
 		}
 
 		// --- fixed-function vertex attributes (bound to their conventional locations at link time)
