@@ -153,7 +153,8 @@ namespace {
 
 	// alphaSplat: the engine set the (A, A, A, A) swizzle (font glyph atlas); WebGL2 has no
 	// swizzles, so GL_ALPHA data for it is stored as LUMINANCE_ALPHA with L = A
-	struct TexInfo { GLint width = 0, height = 0, depth = 1; GLenum internalFormat = 0; bool compressed = false; bool alphaSplat = false; };
+	// rgbaStorage: an RGB float format the shim allocated as RGBA (see PromoteRGBFloat)
+	struct TexInfo { GLint width = 0, height = 0, depth = 1; GLenum internalFormat = 0; bool compressed = false; bool alphaSplat = false; bool rgbaStorage = false; };
 	std::unordered_map<GLuint, TexInfo> textures;
 
 	constexpr int MAX_UNITS = 32;
@@ -177,11 +178,11 @@ namespace {
 		const GLuint id = boundTex[activeUnit][idx];
 		return (id != 0)? &textures[id]: nullptr;
 	}
-	void Record(GLenum target, GLint level, GLenum internalFormat, GLint w, GLint h, GLint d, bool compressed) {
+	void Record(GLenum target, GLint level, GLenum internalFormat, GLint w, GLint h, GLint d, bool compressed, bool rgbaStorage = false) {
 		if (level != 0)
 			return;
 		if (TexInfo* t = BoundTexInfo(target); t != nullptr)
-			*t = {w, h, d, internalFormat, compressed, t->alphaSplat};
+			*t = {w, h, d, internalFormat, compressed, t->alphaSplat, rgbaStorage};
 	}
 
 	void APIENTRY compat_glActiveTexture(GLenum texture) { activeUnit = std::clamp(int(texture - GL_TEXTURE0), 0, MAX_UNITS - 1); real_glActiveTexture(texture); }
@@ -311,6 +312,49 @@ namespace {
 		}
 	}
 
+	// RGB16F/RGB32F are not color-renderable in WebGL2 (EXT_color_buffer_float covers the
+	// R, RG and RGBA float formats only), so a render target such as BAR's GenEnvLut LUT
+	// (gl.CreateTexture{format = GL_RGB16F, fbo = true}) gets an incomplete framebuffer.
+	// 2D storage allocated without pixels is made RGBA instead. Sampling it gives the same
+	// RGB; alpha holds whatever was rendered rather than 1. Later RGB uploads are widened
+	// (WidenRGBFloat). Returns true if the format was changed.
+	bool PromoteRGBFloat(GLint& internalFormat, GLenum& format) {
+		if (internalFormat != GL_RGB16F && internalFormat != GL_RGB32F)
+			return false;
+		internalFormat = (internalFormat == GL_RGB16F)? GL_RGBA16F: GL_RGBA32F;
+		format = GL_RGBA;
+		return true;
+	}
+
+	// RGB float/half-float rows -> RGBA with alpha 1, for an rgbaStorage texture
+	std::vector<uint8_t> WidenRGBFloat(GLenum& format, GLenum type, GLsizei w, GLsizei h, const void* pixels) {
+		std::vector<uint8_t> out;
+		if (format != GL_RGB || pixels == nullptr || (type != GL_FLOAT && type != GL_HALF_FLOAT))
+			return out;
+		const size_t bpc = (type == GL_FLOAT)? 4: 2;
+		GLint align = 4;
+		real_glGetIntegerv(GL_UNPACK_ALIGNMENT, &align);
+		GLint rowLength = 0;
+		real_glGetIntegerv(GL_UNPACK_ROW_LENGTH, &rowLength);
+		const size_t inRow = (size_t((rowLength > 0)? rowLength: w) * 3 * bpc + align - 1) / align * align;
+		const size_t outRow = (size_t(w) * 4 * bpc + align - 1) / align * align;
+		out.assign(outRow * size_t(h), 0);
+		const float one = 1.0f;
+		const uint16_t halfOne = 0x3c00;
+		const uint8_t* src = static_cast<const uint8_t*>(pixels);
+		for (GLsizei y = 0; y < h; y++) {
+			for (GLsizei x = 0; x < w; x++) {
+				uint8_t* o = out.data() + size_t(y) * outRow + size_t(x) * 4 * bpc;
+				std::memcpy(o, src + size_t(y) * inRow + size_t(x) * 3 * bpc, 3 * bpc);
+				std::memcpy(o + 3 * bpc, (bpc == 4)? static_cast<const void*>(&one): static_cast<const void*>(&halfOne), bpc);
+			}
+		}
+		format = GL_RGBA;
+		if (rowLength > 0)
+			real_glPixelStorei(GL_UNPACK_ROW_LENGTH, 0);
+		return out;
+	}
+
 	// BGR(A) byte data -> RGB(A); returns the converted copy (empty if not needed)
 	std::vector<uint8_t> SwapBGR(GLenum& format, GLenum type, GLsizei w, GLsizei h, GLsizei d, const void* pixels) {
 		std::vector<uint8_t> out;
@@ -415,13 +459,14 @@ namespace {
 		const GLint origInternal = internalFormat;
 		const std::vector<uint8_t> splat = AlphaSplat(target, internalFormat, format, type, w, h, pixels, pbo);
 		FixFormats(internalFormat, format, type, pixels != nullptr || pbo);
+		const bool rgbaStorage = (pixels == nullptr && !pbo && PromoteRGBFloat(internalFormat, format));
 		const RowLengthRestore rowLength;
 		const std::vector<float> floats = pbo? std::vector<float>(): NormalizedToFloat(internalFormat, format, type, w, h, 1, pixels);
 		const std::vector<uint8_t> swapped = pbo? std::vector<uint8_t>(): SwapBGR(format, type, w, h, 1, pixels);
 		const void* data = !floats.empty()? static_cast<const void*>(floats.data()): (!splat.empty()? splat.data(): (swapped.empty()? pixels: swapped.data()));
 		real_glTexImage2D(target, level, internalFormat, w, h, 0, format, type, data);
 		CheckError("glTexImage2D", target, origInternal, format, type, w, h);
-		Record(target, level, origInternal, w, h, 1, false);
+		Record(target, level, origInternal, w, h, 1, false, rgbaStorage);
 	}
 
 	void APIENTRY compat_glTexImage3D(GLenum target, GLint level, GLint internalFormat, GLsizei w, GLsizei h, GLsizei d, GLint border, GLenum format, GLenum type, const void* pixels) {
@@ -455,7 +500,10 @@ namespace {
 				floats = NormalizedToFloat(internalFormat, format, type, w, h, 1, pixels);
 		}
 		const std::vector<uint8_t> swapped = pbo? std::vector<uint8_t>(): SwapBGR(format, type, w, h, 1, pixels);
-		const void* data = !floats.empty()? static_cast<const void*>(floats.data()): (!splat.empty()? splat.data(): (swapped.empty()? pixels: swapped.data()));
+		std::vector<uint8_t> widened;
+		if (const TexInfo* t = BoundTexInfo(target); t != nullptr && t->rgbaStorage && !pbo && floats.empty())
+			widened = WidenRGBFloat(format, type, w, h, swapped.empty()? pixels: swapped.data());
+		const void* data = !floats.empty()? static_cast<const void*>(floats.data()): (!splat.empty()? splat.data(): (!widened.empty()? widened.data(): (swapped.empty()? pixels: swapped.data())));
 		real_glTexSubImage2D(target, level, x, y, w, h, format, type, data);
 		CheckError("glTexSubImage2D", target, level, format, type, w, h);
 	}
@@ -464,10 +512,11 @@ namespace {
 		GLint fixedFormat = GLint(internalFormat);
 		GLenum f = GL_RGBA, t = GL_UNSIGNED_BYTE;
 		FixFormats(fixedFormat, f, t, false);
+		const bool rgbaStorage = PromoteRGBFloat(fixedFormat, f);
 		DrainErrors();
 		real_glTexStorage2D(target, levels, fixedFormat, w, h);
 		CheckError("glTexStorage2D", target, internalFormat, levels, 0, w, h);
-		Record(target, 0, internalFormat, w, h, 1, false);
+		Record(target, 0, internalFormat, w, h, 1, false, rgbaStorage);
 	}
 
 	void APIENTRY compat_glTexStorage3D(GLenum target, GLsizei levels, GLenum internalFormat, GLsizei w, GLsizei h, GLsizei d) {
