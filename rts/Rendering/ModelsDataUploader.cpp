@@ -31,6 +31,20 @@
 
 ////////////////////////////////////////////////////////////////////
 
+namespace {
+	// The SSBOs only need storage buffer support; GL4 (haveGL4) also requires the indirect
+	// draws of the GL4 model drawer. The browser renderer has no indirect draws but emulates
+	// read-only storage buffers, which BAR's Lua GL4 shaders read per unit.
+	bool HaveModelDataSSBOs()
+	{
+	#ifdef RECOIL_WEB_RENDER
+		return VBO::IsSupported(GL_SHADER_STORAGE_BUFFER);
+	#else
+		return globalRendering->haveGL4;
+	#endif
+	}
+}
+
 namespace Impl {
 	static constexpr uint32_t PERSISTENT_MAPPING_BUFFERING = 3u;
 
@@ -119,7 +133,7 @@ namespace Impl {
 	>
 	void InitCommon(std::unique_ptr<SSBO>& ssbo, MemStorage& memStorage, uint32_t bindingIdx, uint32_t elemCount0, uint32_t elemCountIncr, IStreamBufferConcept::Types type, bool coherent, uint32_t numBuffers, const char* className)
 	{
-		if (!globalRendering->haveGL4)
+		if (!HaveModelDataSSBOs())
 			return;
 
 		assert(bindingIdx < -1u);
@@ -160,7 +174,7 @@ namespace Impl {
 	template<typename SSBO>
 	void KillCommon(std::unique_ptr<SSBO>& ssbo, uint32_t bindingIdx)
 	{
-		if (!globalRendering->haveGL4)
+		if (!HaveModelDataSSBOs())
 			return;
 
 		ssbo->UnbindBufferRange(bindingIdx);
@@ -197,7 +211,7 @@ void TransformsUploader::Kill()
 
 void TransformsUploader::Update()
 {
-	if (!globalRendering->haveGL4)
+	if (!HaveModelDataSSBOs())
 		return;
 
 	SCOPED_TIMER("TransformsUploader::Update");
@@ -328,7 +342,7 @@ size_t TransformsUploader::GetProjectileElemOffset(int32_t syncedProjectileID) c
 
 void ModelUniformsUploader::Init()
 {
-	if (!globalRendering->haveGL4)
+	if (!HaveModelDataSSBOs())
 		return;
 
 	Impl::InitCommon<MyDataType>(

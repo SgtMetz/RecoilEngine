@@ -48,7 +48,16 @@ namespace WebGLCompat {
 		int glslVersion = 110;      // version the original source asked for
 		int numFragOutputs = 0;     // (fragment) user-declared outputs without a layout qualifier
 		bool writesClipDistance = false; // (vertex) writes gl_ClipDistance, natively or for gl_ClipVertex
+		std::vector<int> storageBindings; // SSBO bindings read through textures (WebGLStorage.cpp)
 	};
+
+	// Read-only shader storage blocks -> integer textures plus loader functions (see
+	// WebGLStorage.cpp). Rewrites every block it can, appends their bindings and returns the
+	// number of blocks left unchanged (written to, unparsable layout, binding out of range).
+	constexpr int NUM_STORAGE_BINDINGS = 16; // indexed bindings tracked
+	constexpr int NUM_STORAGE_UNITS = 8;     // texture units reserved for them; a program may read this many
+	// report: log each block left unchanged and why
+	int RewriteStorageBlocks(std::string& src, std::vector<int>& bindings, bool report);
 
 	// User clip planes (WEBGL_clip_cull_distance, enabled by CreateContext when available).
 	// With support, a vertex shader writing gl_ClipVertex also writes
@@ -57,6 +66,14 @@ namespace WebGLCompat {
 	constexpr int NUM_CLIP_PLANES = 6;
 	void SetClipDistanceSupport(bool supported);
 	bool HaveClipDistanceSupport();
+
+	// Shaders known to crash the browser's GPU process on the current backend, which loses
+	// the WebGL context for good (and Chrome then blocks WebGL for the page). CreateContext
+	// records whether the backend is ANGLE on Direct3D 11; a shader matching an entry for it
+	// is refused with this reason instead of compiled, so its widget fails to load like on a
+	// GPU without the feature. RECOIL_WEB_ALLOW_CRASHING_SHADERS=1 compiles them anyway.
+	void SetAngleD3D11(bool d3d11);
+	const char* KnownBackendCrash(bool isVertex, const std::string& origSource);
 
 	// isVertex: vertex stage, otherwise fragment
 	// forceVaryings: (vertex stage) also declare these CompatVaryings, because the

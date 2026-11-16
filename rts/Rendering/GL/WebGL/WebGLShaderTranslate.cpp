@@ -374,10 +374,37 @@ namespace {
 
 namespace {
 	bool clipDistanceSupport = false;
+	bool angleD3D11 = false;
 }
 
 void WebGLCompat::SetClipDistanceSupport(bool supported) { clipDistanceSupport = supported; }
 bool WebGLCompat::HaveClipDistanceSupport() { return clipDistanceSupport; }
+
+void WebGLCompat::SetAngleD3D11(bool d3d11) { angleD3D11 = d3d11; }
+
+const char* WebGLCompat::KnownBackendCrash(bool isVertex, const std::string& origSource)
+{
+	static const bool allow = [] { const char* e = std::getenv("RECOIL_WEB_ALLOW_CRASHING_SHADERS"); return e != nullptr && *e != 0 && *e != '0'; }();
+	if (allow || !angleD3D11)
+		return nullptr;
+
+	struct Entry { bool isVertex; std::vector<std::string_view> tokens; const char* reason; };
+	static const Entry entries[] = {
+		// BAR's radar preview sheet: main() tests lookupParams.w > 0.5 around two inlined
+		// roundedCells() whose four alliedAt() copies each test lookupParams.w < 0.5. On ANGLE
+		// D3D11 (AMD RX 6700, Chrome, 2026-11) linking it overflows the GPU process stack
+		// (exit 0xC00000FD); replacing either test with an unrelated one links in 0.3 s.
+		{false, {"roundedCells", "alliedAt", "alliedCircles", "lookupParams"},
+		 "ANGLE D3D11's HLSL compiler overflows the GPU process stack on this shader (radar preview sheet)"},
+	};
+	for (const Entry& e: entries) {
+		if (e.isVertex != isVertex)
+			continue;
+		if (std::all_of(e.tokens.begin(), e.tokens.end(), [&](std::string_view t) { return origSource.find(t) != std::string::npos; }))
+			return e.reason;
+	}
+	return nullptr;
+}
 
 WebGLCompat::ShaderTranslation WebGLCompat::TranslateShader(bool isVertex, const std::string& src, uint32_t forceVaryings, const std::vector<std::pair<std::string, int>>* fragOutputBindings, bool forGlslang)
 {
@@ -398,6 +425,9 @@ WebGLCompat::ShaderTranslation WebGLCompat::TranslateShader(bool isVertex, const
 			StripExtensions(s);
 		}
 	}
+	// only the translation that will be used reports blocks it can't rewrite (the text one
+	// also runs as a fallback when cross-compilation is available)
+	RewriteStorageBlocks(s, res.storageBindings, forGlslang || !CrossCompileAvailable());
 	FlattenInterfaceBlocks(s);
 	StripUniformInitializers(s, res.uniformDefaults);
 
@@ -410,6 +440,9 @@ WebGLCompat::ShaderTranslation WebGLCompat::TranslateShader(bool isVertex, const
 		int version = std::max(res.glslVersion, 330);
 		if (version < 420 && (HasIdent(s, "binding") || s.find("\\\n") != std::string::npos || s.find("\\\r\n") != std::string::npos))
 			version = 420;
+		// std430 storage blocks are core in 4.30 (GL_ARB_shader_storage_buffer_object before)
+		if (version < 430 && HasIdent(s, "std430"))
+			version = 430;
 		pre += "#version " + std::to_string(version) + " core\n";
 	} else {
 		pre += "#version 300 es\n";

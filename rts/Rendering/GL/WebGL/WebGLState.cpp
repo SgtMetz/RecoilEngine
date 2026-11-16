@@ -349,6 +349,7 @@ namespace {
 		int numFragOutputs = 0;
 		std::vector<WebGLCompat::UniformDefault> uniformDefaults;
 		bool writesClipDistance = false; // vertex stage with real gl_ClipDistance outputs
+		std::vector<int> storageBindings;
 		// explicit layout(binding) of the cross-compiled source (GLSL ES 3.00 has none)
 		std::vector<std::pair<std::string, int>> samplerBindings;
 		std::vector<std::pair<std::string, int>> blockBindings;
@@ -360,6 +361,7 @@ namespace {
 		bool linked = false;
 		bool hasBuiltins = false;
 		bool writesClipDistance = false;
+		std::vector<WebGLCompat::StorageUse> storage; // emulated SSBOs the program reads
 		uint32_t stateStamp = 0;
 		GLint locModelView = -1, locProjection = -1, locMVP = -1, locNormal = -1;
 		GLint locModelViewInv = -1, locProjectionInv = -1, locMVPInv = -1, locTexture = -1;
@@ -405,6 +407,33 @@ namespace {
 		return id;
 	}
 
+	// RECOIL_WEB_DUMP_SHADERS=<text>[|<text>...]: the source handed to WebGL for every shader
+	// whose original source contains one of the texts is written to <cwd>/shader-dump-N.glsl
+	// (debugging aid: shaders the browser's GL backend rejects can then be reproduced outside
+	// the engine)
+	void MaybeDumpShader(const ShaderInfo& info, const std::string& final) {
+		static const char* env = std::getenv("RECOIL_WEB_DUMP_SHADERS");
+		if (env == nullptr || *env == 0)
+			return;
+		const std::string_view all(env);
+		bool matched = false;
+		for (size_t b = 0; b <= all.size() && !matched; ) {
+			const size_t e = std::min(all.find('|', b), all.size());
+			const std::string_view token = all.substr(b, e - b);
+			matched = (!token.empty() && info.origSource.find(token) != std::string::npos);
+			b = e + 1;
+		}
+		if (!matched)
+			return;
+		static int n = 0;
+		const std::string path = "shader-dump-" + std::to_string(++n) + ".glsl";
+		if (FILE* f = fopen(path.c_str(), "wb"); f != nullptr) {
+			fputs(final.c_str(), f);
+			fclose(f);
+			LOG("[WebGLCompat] %s shader written to %s", info.isVertex? "vertex": "fragment", path.c_str());
+		}
+	}
+
 	void SetTranslatedSource(GLuint shader, ShaderInfo& info, uint32_t forceVaryings, const std::vector<std::pair<std::string, int>>* fragOutputBindings = nullptr) {
 		const WebGLCompat::ShaderTranslation xl = WebGLCompat::TranslateShader(info.isVertex, info.origSource, forceVaryings, fragOutputBindings);
 		info.numFragOutputs = xl.numFragOutputs;
@@ -412,9 +441,19 @@ namespace {
 		info.attribsUsed = xl.attribsUsed;
 		info.uniformDefaults = xl.uniformDefaults;
 		info.writesClipDistance = xl.writesClipDistance;
+		info.storageBindings = xl.storageBindings;
 		info.samplerBindings.clear();
 		info.blockBindings.clear();
 		info.translated = true;
+
+		// a shader that would crash the GPU process fails to compile instead (see KnownBackendCrash)
+		if (const char* reason = WebGLCompat::KnownBackendCrash(info.isVertex, info.origSource); reason != nullptr) {
+			LOG_L(L_WARNING, "[WebGLCompat] %s shader refused: %s (RECOIL_WEB_ALLOW_CRASHING_SHADERS=1 compiles it anyway)", info.isVertex? "vertex": "fragment", reason);
+			const std::string refused = std::string("#version 300 es\n#error refused by the engine: ") + reason + "\n";
+			const GLchar* ptr = refused.c_str();
+			real_glShaderSource(shader, 1, &ptr, nullptr);
+			return;
+		}
 
 		// preferred: glslang + SPIRV-Cross on the same rewrites as desktop GLSL; the text
 		// translation is the fallback when that fails
@@ -433,6 +472,8 @@ namespace {
 				}
 				info.samplerBindings = std::move(cc.samplerBindings);
 				info.blockBindings = std::move(cc.blockBindings);
+				info.storageBindings = dx.storageBindings;
+				MaybeDumpShader(info, cc.source);
 				const GLchar* ptr = cc.source.c_str();
 				real_glShaderSource(shader, 1, &ptr, nullptr);
 				return;
@@ -453,6 +494,7 @@ namespace {
 				}
 			}
 		}
+		MaybeDumpShader(info, xl.source);
 		const GLchar* ptr = xl.source.c_str();
 		real_glShaderSource(shader, 1, &ptr, nullptr);
 	}
@@ -628,6 +670,7 @@ namespace {
 		prog.stateStamp = 0;
 		prog.hasBuiltins = false;
 		prog.writesClipDistance = (vs != nullptr && vs->writesClipDistance);
+		prog.storage.clear();
 		if (!prog.linked)
 			return;
 
@@ -659,6 +702,21 @@ namespace {
 				const GLuint idx = glGetUniformBlockIndex(program, name.c_str());
 				if (idx != GL_INVALID_INDEX)
 					glUniformBlockBinding(program, idx, GLuint(binding));
+			}
+			// emulated storage blocks: their textures sit on fixed units
+			for (const int b: sh->storageBindings) {
+				const std::string name = "rcl_ssbo" + std::to_string(b);
+				const GLint l = real_glGetUniformLocation(program, name.c_str());
+				const bool known = std::any_of(prog.storage.begin(), prog.storage.end(), [b](const WebGLCompat::StorageUse& u) { return u.binding == b; });
+				if (l < 0 || known)
+					continue;
+				const GLint unit = WebGLCompat::StorageTextureUnit(int(prog.storage.size()));
+				if (unit < 0) {
+					LOG_L(L_WARNING, "[WebGLCompat] program %u reads more than %d storage buffers; binding %d is not provided", program, WebGLCompat::NUM_STORAGE_UNITS, b);
+					continue;
+				}
+				real_glUniform1i(l, unit);
+				prog.storage.push_back({b, unit, real_glGetUniformLocation(program, (name + "_bytes").c_str())});
 			}
 		}
 		real_glUseProgram(currentProgram);
@@ -775,6 +833,8 @@ namespace {
 		}
 		ProgramInfo& p = it->second;
 		SyncClipDistances(&p);
+		if (!p.storage.empty())
+			WebGLCompat::BindStorageForDraw(p.storage);
 		if (!p.hasBuiltins || p.stateStamp == fixedStateStamp)
 			return;
 		p.stateStamp = fixedStateStamp;

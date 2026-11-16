@@ -5,12 +5,18 @@
 
 #include "WebGLShaderTranslate.h"
 
+#include <algorithm>
+#include <cstdio>
 #include <cstdlib>
 #include <cstring>
 
 #ifdef RECOIL_WEB_GLSLANG
 #include <exception>
 #include <set>
+#include <unordered_map>
+#include <vector>
+
+#include "WebGLSpvFold.h"
 
 #include <glslang/Public/ShaderLang.h>
 #include <glslang/Public/ResourceLimits.h>
@@ -21,6 +27,7 @@
 namespace {
 	int numOk = 0;
 	int numFailed = 0;
+	int numFoldedBranches = 0; // selections turned into OpSelect (SpvFold)
 }
 
 void WebGLCompat::GetCrossCompileStats(int& ok, int& failed) { ok = numOk; failed = numFailed; }
@@ -131,6 +138,31 @@ bool WebGLCompat::CrossCompile(bool isVertex, const std::string& desktopSrc, Cro
 	spvOptions.validate = false;
 	glslang::GlslangToSpv(*program.getIntermediate(stage), spirv, &spvOptions);
 
+	// RECOIL_WEB_DUMP_SHADERS=<text>[|<text>...] (see WebGLState.cpp): also keep glslang's SPIR-V
+	// of matching shaders, before any folding, as <cwd>/spirv-dump-N.spv
+	if (const char* env = std::getenv("RECOIL_WEB_DUMP_SHADERS"); env != nullptr && *env != 0) {
+		const std::string all(env);
+		bool matched = false;
+		for (size_t b = 0; b <= all.size() && !matched; ) {
+			const size_t e = std::min(all.find('|', b), all.size());
+			matched = (e > b && desktopSrc.find(all.substr(b, e - b)) != std::string::npos);
+			b = e + 1;
+		}
+		static int numDumped = 0;
+		if (matched) {
+			const std::string path = "spirv-dump-" + std::to_string(++numDumped) + ".spv";
+			if (FILE* f = fopen(path.c_str(), "wb"); f != nullptr) {
+				fwrite(spirv.data(), sizeof(uint32_t), spirv.size(), f);
+				fclose(f);
+			}
+		}
+	}
+
+	// short-circuit and ternary branches -> selects (see SpvFold); RECOIL_WEB_SPV_FOLD=0 disables it
+	static const bool fold = [] { const char* e = std::getenv("RECOIL_WEB_SPV_FOLD"); return e == nullptr || std::strcmp(e, "0") != 0; }();
+	if (fold)
+		numFoldedBranches += SpvFold::Fold(spirv);
+
 	// --- SPIR-V -> GLSL ES 3.00
 	try {
 		spirv_cross::CompilerGLSL compiler(std::move(spirv));
@@ -158,6 +190,13 @@ bool WebGLCompat::CrossCompile(bool isVertex, const std::string& desktopSrc, Cro
 		if (isVertex) {
 			for (const spirv_cross::Resource& r: res.stage_outputs)
 				compiler.unset_decoration(r.id, spv::DecorationLocation);
+		}
+		// integer varyings must be flat in GLSL ES (desktop GLSL only requires it of fragment
+		// inputs, so vertex outputs often omit it)
+		for (const spirv_cross::Resource& r: isVertex? res.stage_outputs: res.stage_inputs) {
+			const spirv_cross::SPIRType::BaseType bt = compiler.get_type(r.base_type_id).basetype;
+			if (bt == spirv_cross::SPIRType::Int || bt == spirv_cross::SPIRType::UInt)
+				compiler.set_decoration(r.id, spv::DecorationFlat);
 		}
 		for (const spirv_cross::Resource& r: res.gl_plain_uniforms)
 			compiler.unset_decoration(r.id, spv::DecorationLocation);

@@ -198,6 +198,8 @@ namespace {
 		// at those slots and WebGL rejects every draw of such a program.
 		if (WebGLCompat::CrossCompileAvailable())
 			extensions.emplace_back("GL_ARB_shading_language_420pack");
+		// read-only storage blocks, emulated with textures (WebGLStorage.cpp)
+		extensions.emplace_back("GL_ARB_shader_storage_buffer_object");
 
 		std::sort(extensions.begin(), extensions.end());
 		extensions.erase(std::unique(extensions.begin(), extensions.end()), extensions.end());
@@ -359,6 +361,21 @@ void* WebGLCompat::CreateContext()
 		return nullptr;
 	}
 
+	// a lost context makes every later GL call fail; say so once instead of leaving only the
+	// errors that follow (a shader the browser's GL backend can't compile can cause it)
+	emscripten_set_webglcontextlost_callback("#canvas", nullptr, true, [](int, const void*, void*) -> EM_BOOL { LOG_L(L_ERROR, "[WebGLCompat] WebGL context lost"); return 0; });
+
+	// the backend behind WebGL, for shaders known to crash one (WebGLCompat::KnownBackendCrash);
+	// browsers that hide it report nothing and get no such workarounds
+	const bool angleD3D11 = EM_ASM_INT({
+		const gl = GL.currentContext && GL.currentContext.GLctx;
+		const ext = gl && gl.getExtension('WEBGL_debug_renderer_info');
+		const r = ext ? String(gl.getParameter(ext.UNMASKED_RENDERER_WEBGL)) : '';
+		return (r.indexOf('ANGLE') >= 0 && r.indexOf('Direct3D11') >= 0) ? 1 : 0;
+	}) != 0;
+	SetAngleD3D11(angleD3D11);
+	LOG("[WebGLCompat::%s] ANGLE on Direct3D 11: %s", __func__, angleD3D11? "yes": "no");
+
 	// user clip planes (unit build stages, Lua gl.ClipPlane); without it they are ignored
 	const bool clipDistance = emscripten_webgl_enable_extension(handle, "WEBGL_clip_cull_distance");
 	SetClipDistanceSupport(clipDistance);
@@ -506,6 +523,7 @@ bool WebGLCompat::Load()
 	InstallStateEmulation();
 	InstallObjectEmulation();
 	InstallImmediateEmulation();
+	InstallStorageEmulation();
 
 	if (const char* env = getenv("RECOIL_WEB_GLCHECK"); env != nullptr && atoi(env) != 0) {
 		InstallErrorChecks();

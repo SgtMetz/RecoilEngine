@@ -4,6 +4,7 @@
 
 #include <cstdint>
 #include <functional>
+#include <vector>
 
 #include <glad/glad.h>
 
@@ -18,8 +19,20 @@ namespace WebGLCompat {
 	void InstallObjectEmulation();
 
 	// WebGLImmediate.cpp: glBegin/glEnd, display lists and the fixed-function program;
-	// called last
+	// called after InstallObjectEmulation()
 	void InstallImmediateEmulation();
+
+	// WebGLStorage.cpp: read-only shader storage buffers as textures; called last
+	void InstallStorageEmulation();
+	struct StorageUse {
+		int binding;
+		GLint unit;     // texture unit of its mirror in this program
+		GLint bytesLoc; // rcl_ssboN_bytes, for member.length()
+	};
+	// the texture unit for a program's slot-th storage binding (-1: too many)
+	GLint StorageTextureUnit(int slot);
+	// before a draw: refresh the textures of the bindings the program reads and bind them
+	void BindStorageForDraw(const std::vector<StorageUse>& uses);
 
 	// debugging aid for memory corruption (RECOIL_WEB_CANARY=1): checks that the start of
 	// static data is intact and logs (once) the first checkpoint at which it is not
