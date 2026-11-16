@@ -29,6 +29,16 @@ namespace {
 
 	int numLoggedErrors = 0;
 	// report the GL error a just-issued upload call raised (a few dozen at most)
+	// WebGL errors stay set until read, so an error of an earlier unchecked call would be
+	// reported by CheckError as this call's: read (and log) it first
+	void ClearPendingError(const char* func) {
+		const GLenum err = real_glGetError();
+		if (err == GL_NO_ERROR || numLoggedErrors >= 60)
+			return;
+		numLoggedErrors++;
+		LOG_L(L_WARNING, "[WebGLCompat] GL error 0x%x was pending before %s (raised by an earlier call)", err, func);
+	}
+
 	void CheckError(const char* func, GLenum target, GLint a, GLint b, GLint c, GLint w, GLint h) {
 		const GLenum err = real_glGetError();
 		if (err == GL_NO_ERROR || numLoggedErrors >= 60)
@@ -455,6 +465,7 @@ namespace {
 	}
 
 	void APIENTRY compat_glTexImage2D(GLenum target, GLint level, GLint internalFormat, GLsizei w, GLsizei h, GLint border, GLenum format, GLenum type, const void* pixels) {
+		ClearPendingError("glTexImage2D");
 		const bool pbo = UnpackBufferBound();
 		const GLint origInternal = internalFormat;
 		const std::vector<uint8_t> splat = AlphaSplat(target, internalFormat, format, type, w, h, pixels, pbo);
@@ -470,6 +481,7 @@ namespace {
 	}
 
 	void APIENTRY compat_glTexImage3D(GLenum target, GLint level, GLint internalFormat, GLsizei w, GLsizei h, GLsizei d, GLint border, GLenum format, GLenum type, const void* pixels) {
+		ClearPendingError("glTexImage3D");
 		const bool pbo = UnpackBufferBound();
 		const GLint origInternal = internalFormat;
 		FixFormats(internalFormat, format, type, pixels != nullptr || pbo);
@@ -509,6 +521,7 @@ namespace {
 	}
 
 	void APIENTRY compat_glTexStorage2D(GLenum target, GLsizei levels, GLenum internalFormat, GLsizei w, GLsizei h) {
+		ClearPendingError("glTexStorage2D");
 		GLint fixedFormat = GLint(internalFormat);
 		GLenum f = GL_RGBA, t = GL_UNSIGNED_BYTE;
 		FixFormats(fixedFormat, f, t, false);
@@ -520,6 +533,7 @@ namespace {
 	}
 
 	void APIENTRY compat_glTexStorage3D(GLenum target, GLsizei levels, GLenum internalFormat, GLsizei w, GLsizei h, GLsizei d) {
+		ClearPendingError("glTexStorage3D");
 		GLint fixedFormat = GLint(internalFormat);
 		GLenum f = GL_RGBA, t = GL_UNSIGNED_BYTE;
 		FixFormats(fixedFormat, f, t, false);
@@ -529,12 +543,14 @@ namespace {
 	}
 
 	void APIENTRY compat_glCompressedTexImage2D(GLenum target, GLint level, GLenum internalFormat, GLsizei w, GLsizei h, GLint border, GLsizei imageSize, const void* data) {
+		ClearPendingError("glCompressedTexImage2D");
 		real_glCompressedTexImage2D(target, level, internalFormat, w, h, 0, imageSize, data);
 		CheckError("glCompressedTexImage2D", target, internalFormat, level, imageSize, w, h);
 		Record(target, level, internalFormat, w, h, 1, true);
 	}
 
 	void APIENTRY compat_glCopyTexImage2D(GLenum target, GLint level, GLenum internalFormat, GLint x, GLint y, GLsizei w, GLsizei h, GLint border) {
+		ClearPendingError("glCopyTexImage2D");
 		real_glCopyTexImage2D(target, level, internalFormat, x, y, w, h, 0);
 		CheckError("glCopyTexImage2D", target, internalFormat, level, 0, w, h);
 		Record(target, level, internalFormat, w, h, 1, false);
