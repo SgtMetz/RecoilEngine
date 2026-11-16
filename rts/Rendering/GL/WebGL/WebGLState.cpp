@@ -321,6 +321,7 @@ namespace {
 	struct ProgramInfo {
 		std::vector<GLuint> shaders;
 		std::vector<std::pair<std::string, int>> fragOutputBindings; // glBindFragDataLocation
+		GLuint ffVertexShader = 0; // generated for fragment-only programs (see compat_glLinkProgram)
 		bool linked = false;
 		bool hasBuiltins = false;
 		uint32_t stateStamp = 0;
@@ -490,6 +491,26 @@ namespace {
 		ReleaseShaderInfo(shader);
 	}
 
+	// Desktop compatibility GL links a program with only a fragment shader and runs the
+	// fixed-function vertex stage for it (LuaIntro's blur, BAR's pause screen); WebGL2
+	// needs both stages. This vertex shader does what fixed-function does for the
+	// compatibility varyings the fragment stage reads (no texgen or lighting).
+	std::string FixedFunctionVertexSource(uint32_t varyings) {
+		std::string src = "#version 120\nvoid main() {\n\tgl_Position = ftransform();\n";
+		if (varyings & WebGLCompat::VARYING_COLOR)
+			src += "\tgl_FrontColor = gl_Color;\n";
+		if (varyings & WebGLCompat::VARYING_TEXCOORD) {
+			// the shim keeps four texture matrices
+			for (int i = 0; i < 4; i++) {
+				const std::string n = std::to_string(i);
+				src += "\tgl_TexCoord[" + n + "] = gl_TextureMatrix[" + n + "] * gl_MultiTexCoord" + n + ";\n";
+			}
+		}
+		if (varyings & WebGLCompat::VARYING_FOGCOORD)
+			src += "\tgl_FogFragCoord = abs((gl_ModelViewMatrix * gl_Vertex).z);\n";
+		return src + "}\n";
+	}
+
 	void APIENTRY compat_glLinkProgram(GLuint program) {
 		const auto pit = programs.find(program);
 		if (pit == programs.end()) {
@@ -507,6 +528,28 @@ namespace {
 			if (sit == shaders.end())
 				continue;
 			if (sit->second.isVertex) { vs = &sit->second; vsId = id; } else { fs = &sit->second; fsId = id; }
+		}
+
+		if (vs == nullptr && fs != nullptr && fs->translated) {
+			if (prog.ffVertexShader == 0) {
+				prog.ffVertexShader = compat_glCreateShader(GL_VERTEX_SHADER);
+				real_glAttachShader(program, prog.ffVertexShader);
+				static int numLogged = 0;
+				if (++numLogged <= 8)
+					LOG("[WebGLCompat] program %u has no vertex shader; using a fixed-function equivalent", program);
+			}
+			ShaderInfo& info = shaders[prog.ffVertexShader];
+			info.isVertex = true;
+			info.origSource = FixedFunctionVertexSource(fs->varyingsUsed);
+			SetTranslatedSource(prog.ffVertexShader, info, fs->varyingsUsed);
+			real_glCompileShader(prog.ffVertexShader);
+			vs = &info;
+			vsId = prog.ffVertexShader;
+		} else if (prog.ffVertexShader != 0 && vs != nullptr) {
+			// the engine attached its own vertex shader since
+			real_glDetachShader(program, prog.ffVertexShader);
+			compat_glDeleteShader(prog.ffVertexShader);
+			prog.ffVertexShader = 0;
 		}
 
 		// fragment outputs the engine placed with glBindFragDataLocation: GLSL ES only
@@ -628,8 +671,13 @@ namespace {
 
 	void APIENTRY compat_glDeleteProgram(GLuint program) {
 		std::vector<GLuint> attached;
-		if (const auto it = programs.find(program); it != programs.end())
+		if (const auto it = programs.find(program); it != programs.end()) {
 			attached = it->second.shaders;
+			if (it->second.ffVertexShader != 0) {
+				shaders.erase(it->second.ffVertexShader);
+				real_glDeleteShader(it->second.ffVertexShader);
+			}
+		}
 		programs.erase(program);
 		for (const GLuint id: attached)
 			ReleaseShaderInfo(id);
