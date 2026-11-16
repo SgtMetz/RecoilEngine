@@ -132,6 +132,13 @@ namespace {
 			extensions.emplace_back("GL_EXT_texture_compression_s3tc");
 		if (HaveRealExt("GL_EXT_color_buffer_float"))
 			extensions.emplace_back("GL_ARB_color_buffer_float");
+		// layout(binding = N) on samplers and uniform blocks: the cross-compiled shaders
+		// return those bindings and the link applies them (glUniform1i/glUniformBlockBinding).
+		// The engine's UniformConstants UBOs (camera matrices and frame parameters that BAR's
+		// GL4 shaders read at bindings 0 and 1) require it; without them nothing is bound
+		// at those slots and WebGL rejects every draw of such a program.
+		if (WebGLCompat::CrossCompileAvailable())
+			extensions.emplace_back("GL_ARB_shading_language_420pack");
 
 		std::sort(extensions.begin(), extensions.end());
 		extensions.erase(std::unique(extensions.begin(), extensions.end()), extensions.end());
@@ -267,9 +274,11 @@ void* WebGLCompat::CreateContext()
 
 	attrs.majorVersion = 2;
 	attrs.minorVersion = 0;
-	// opaque canvas: the engine writes arbitrary alpha to the default framebuffer,
-	// which the page would otherwise blend with whatever is behind the canvas
-	attrs.alpha = false;
+	// RGBA like a desktop default framebuffer: WebGL only copies (glCopyTexSubImage2D, e.g.
+	// BAR's screen copies for CAS and blur) into formats whose components the source has,
+	// so an RGB canvas rejects copies into RGBA textures. The engine writes arbitrary alpha,
+	// which the page would blend with whatever is behind the canvas: SwapWindow sets it to 1.
+	attrs.alpha = true;
 	attrs.depth = true;
 	attrs.stencil = true;
 	attrs.antialias = false;
@@ -310,8 +319,33 @@ int WebGLCompat::MakeCurrent(void* ctx)
 	return (emscripten_webgl_make_context_current(reinterpret_cast<EMSCRIPTEN_WEBGL_CONTEXT_HANDLE>(ctx)) == EMSCRIPTEN_RESULT_SUCCESS)? 0: -1;
 }
 
+// alpha of the default framebuffer to 1, so the canvas composites as opaque
+static void ForceOpaqueAlpha()
+{
+	GLint drawFbo = 0;
+	GLboolean mask[4] = {GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE};
+	GLfloat clear[4] = {0.0f, 0.0f, 0.0f, 0.0f};
+	real_glGetIntegerv(GL_DRAW_FRAMEBUFFER_BINDING, &drawFbo);
+	glGetBooleanv(GL_COLOR_WRITEMASK, mask);
+	glGetFloatv(GL_COLOR_CLEAR_VALUE, clear);
+	const GLboolean scissor = glIsEnabled(GL_SCISSOR_TEST);
+
+	glBindFramebuffer(GL_DRAW_FRAMEBUFFER, 0);
+	glColorMask(GL_FALSE, GL_FALSE, GL_FALSE, GL_TRUE);
+	glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
+	if (scissor) glDisable(GL_SCISSOR_TEST);
+	glClear(GL_COLOR_BUFFER_BIT);
+
+	if (scissor) glEnable(GL_SCISSOR_TEST);
+	glClearColor(clear[0], clear[1], clear[2], clear[3]);
+	glColorMask(mask[0], mask[1], mask[2], mask[3]);
+	glBindFramebuffer(GL_DRAW_FRAMEBUFFER, GLuint(drawFbo));
+}
+
 void WebGLCompat::SwapWindow()
 {
+	ForceOpaqueAlpha();
+
 	// nothing to present explicitly; use the frame boundary to report what is still missing
 	static double lastReportMs = 0.0;
 	const double nowMs = emscripten_get_now();
