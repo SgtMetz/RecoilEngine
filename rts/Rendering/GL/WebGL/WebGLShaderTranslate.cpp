@@ -406,6 +406,35 @@ const char* WebGLCompat::KnownBackendCrash(bool isVertex, const std::string& ori
 	return nullptr;
 }
 
+bool WebGLCompat::AvoidBackendCrash(std::string& src)
+{
+	// Radar preview sheet: FXC overflows its stack correlating main()'s lookupParams.w > 0.5
+	// with the lookupParams.w < 0.5 of each inlined alliedAt(). alliedAt reads the component
+	// through an index FXC can't fold: gl_FragCoord.x is >= 0 for every fragment (window
+	// coordinates), so min(gl_FragCoord.x, 0.0) is 0 and the index is always 3, the same
+	// value. Verified with scratchpad/repro-fresh.ps1: the rewritten shader links in 0.4 s,
+	// the original loses the context.
+	const size_t fn = src.find("float alliedAt(");
+	if (fn == std::string::npos)
+		return false;
+	const size_t open = src.find('{', fn);
+	const size_t close = src.find("\n}", open);
+	if (open == std::string::npos || close == std::string::npos)
+		return false;
+	std::string body = src.substr(open, close - open);
+	const std::string from = "lookupParams.w";
+	const std::string to = "lookupParams[3 + int(min(gl_FragCoord.x, 0.0))]";
+	size_t n = 0;
+	for (size_t pos = body.find(from); pos != std::string::npos; pos = body.find(from, pos + to.size())) {
+		body.replace(pos, from.size(), to);
+		n++;
+	}
+	if (n == 0)
+		return false;
+	src.replace(open, close - open, body);
+	return true;
+}
+
 WebGLCompat::ShaderTranslation WebGLCompat::TranslateShader(bool isVertex, const std::string& src, uint32_t forceVaryings, const std::vector<std::pair<std::string, int>>* fragOutputBindings, bool forGlslang)
 {
 	ShaderTranslation res;
@@ -489,6 +518,20 @@ WebGLCompat::ShaderTranslation WebGLCompat::TranslateShader(bool isVertex, const
 		// the pre-1.30 shadow lookups return vec4
 		pre += "vec4 rcl_shadow2D(sampler2DShadow s, vec3 c) { return vec4(texture(s, c)); }\n";
 		pre += "vec4 rcl_shadow2DProj(sampler2DShadow s, vec4 c) { return vec4(textureProj(s, c)); }\n";
+	}
+	// textureGather (GLSL 4.00, ESSL 3.10; BAR's SSAO and deferred lights): the four texels of
+	// the bilinear footprint at level 0, in gather order (i0,j1) (i1,j1) (i1,j0) (i0,j0).
+	// Texel coordinates are clamped, which matches CLAMP_TO_EDGE; REPEAT/MIRROR textures
+	// differ along their border texels.
+	if (ReplaceIdent(s, "textureGather", "rcl_textureGather") > 0) {
+		pre += "vec4 rcl_textureGather(sampler2D t, vec2 uv, int c) {\n"
+		       "\tivec2 sz = textureSize(t, 0);\n"
+		       "\tivec2 i0 = ivec2(floor(uv * vec2(sz) - 0.5));\n"
+		       "\tivec2 lo = clamp(i0, ivec2(0), sz - 1);\n"
+		       "\tivec2 hi = clamp(i0 + 1, ivec2(0), sz - 1);\n"
+		       "\treturn vec4(texelFetch(t, ivec2(lo.x, hi.y), 0)[c], texelFetch(t, hi, 0)[c], texelFetch(t, ivec2(hi.x, lo.y), 0)[c], texelFetch(t, lo, 0)[c]);\n"
+		       "}\n"
+		       "vec4 rcl_textureGather(sampler2D t, vec2 uv) { return rcl_textureGather(t, uv, 0); }\n";
 	}
 
 	// --- compatibility-profile uniforms (fixed-function state, uploaded by WebGLCompat)

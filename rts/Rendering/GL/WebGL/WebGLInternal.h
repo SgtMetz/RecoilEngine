@@ -24,6 +24,10 @@ namespace WebGLCompat {
 
 	// WebGLStorage.cpp: read-only shader storage buffers as textures; called last
 	void InstallStorageEmulation();
+
+	// WebGLDrawBase.cpp: base-vertex/base-instance and client-memory indirect draws; called
+	// after InstallStorageEmulation(), so its draws go through every other hook
+	void InstallDrawBaseEmulation();
 	struct StorageUse {
 		int binding;
 		GLint unit;     // texture unit of its mirror in this program

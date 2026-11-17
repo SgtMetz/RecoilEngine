@@ -200,6 +200,16 @@ namespace {
 			extensions.emplace_back("GL_ARB_shading_language_420pack");
 		// read-only storage blocks, emulated with textures (WebGLStorage.cpp)
 		extensions.emplace_back("GL_ARB_shader_storage_buffer_object");
+		// base vertex/instance and indirect draws, emulated (WebGLDrawBase.cpp). Together with
+		// the storage blocks this makes the engine report GL4 (globalRendering->haveGL4), which
+		// BAR's GL4 widgets and gl.GetEngineUniformBufferDef require.
+		// RECOIL_WEB_NO_GL4=1 leaves these out (the pre-2026-11-17 behaviour).
+		if (const char* env = getenv("RECOIL_WEB_NO_GL4"); env == nullptr || atoi(env) == 0) {
+			extensions.emplace_back("GL_ARB_draw_elements_base_vertex");
+			extensions.emplace_back("GL_ARB_base_instance");
+			extensions.emplace_back("GL_ARB_draw_indirect");
+			extensions.emplace_back("GL_ARB_multi_draw_indirect");
+		}
 
 		std::sort(extensions.begin(), extensions.end());
 		extensions.erase(std::unique(extensions.begin(), extensions.end()), extensions.end());
@@ -524,6 +534,7 @@ bool WebGLCompat::Load()
 	InstallObjectEmulation();
 	InstallImmediateEmulation();
 	InstallStorageEmulation();
+	InstallDrawBaseEmulation();
 
 	if (const char* env = getenv("RECOIL_WEB_GLCHECK"); env != nullptr && atoi(env) != 0) {
 		InstallErrorChecks();

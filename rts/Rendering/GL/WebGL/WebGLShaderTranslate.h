@@ -74,6 +74,9 @@ namespace WebGLCompat {
 	// GPU without the feature. RECOIL_WEB_ALLOW_CRASHING_SHADERS=1 compiles them anyway.
 	void SetAngleD3D11(bool d3d11);
 	const char* KnownBackendCrash(bool isVertex, const std::string& origSource);
+	// rewrites a cross-compiled shader flagged by KnownBackendCrash so the backend compiles
+	// it, without changing its results; false if no rewrite is known (then it is refused)
+	bool AvoidBackendCrash(std::string& translated);
 
 	// isVertex: vertex stage, otherwise fragment
 	// forceVaryings: (vertex stage) also declare these CompatVaryings, because the

@@ -434,6 +434,14 @@ namespace {
 		}
 	}
 
+	// a shader that would crash the GPU process gets a source that fails to compile instead
+	void RefuseShader(GLuint shader, ShaderInfo& info, const char* reason) {
+		LOG_L(L_WARNING, "[WebGLCompat] %s shader refused: %s (RECOIL_WEB_ALLOW_CRASHING_SHADERS=1 compiles it anyway)", info.isVertex? "vertex": "fragment", reason);
+		const std::string refused = std::string("#version 300 es\n#error refused by the engine: ") + reason + "\n";
+		const GLchar* ptr = refused.c_str();
+		real_glShaderSource(shader, 1, &ptr, nullptr);
+	}
+
 	void SetTranslatedSource(GLuint shader, ShaderInfo& info, uint32_t forceVaryings, const std::vector<std::pair<std::string, int>>* fragOutputBindings = nullptr) {
 		const WebGLCompat::ShaderTranslation xl = WebGLCompat::TranslateShader(info.isVertex, info.origSource, forceVaryings, fragOutputBindings);
 		info.numFragOutputs = xl.numFragOutputs;
@@ -447,11 +455,10 @@ namespace {
 		info.translated = true;
 
 		// a shader that would crash the GPU process fails to compile instead (see KnownBackendCrash)
-		if (const char* reason = WebGLCompat::KnownBackendCrash(info.isVertex, info.origSource); reason != nullptr) {
-			LOG_L(L_WARNING, "[WebGLCompat] %s shader refused: %s (RECOIL_WEB_ALLOW_CRASHING_SHADERS=1 compiles it anyway)", info.isVertex? "vertex": "fragment", reason);
-			const std::string refused = std::string("#version 300 es\n#error refused by the engine: ") + reason + "\n";
-			const GLchar* ptr = refused.c_str();
-			real_glShaderSource(shader, 1, &ptr, nullptr);
+		// unless the cross-compiled source can be rewritten to avoid it (AvoidBackendCrash)
+		const char* crashReason = WebGLCompat::KnownBackendCrash(info.isVertex, info.origSource);
+		if (crashReason != nullptr && !WebGLCompat::CrossCompileAvailable()) {
+			RefuseShader(shader, info, crashReason);
 			return;
 		}
 
@@ -473,6 +480,13 @@ namespace {
 				info.samplerBindings = std::move(cc.samplerBindings);
 				info.blockBindings = std::move(cc.blockBindings);
 				info.storageBindings = dx.storageBindings;
+				if (crashReason != nullptr) {
+					if (!WebGLCompat::AvoidBackendCrash(cc.source)) {
+						RefuseShader(shader, info, crashReason);
+						return;
+					}
+					LOG("[WebGLCompat] fragment shader rewritten to avoid a known backend crash: %s", crashReason);
+				}
 				MaybeDumpShader(info, cc.source);
 				const GLchar* ptr = cc.source.c_str();
 				real_glShaderSource(shader, 1, &ptr, nullptr);
@@ -493,6 +507,10 @@ namespace {
 					fclose(f);
 				}
 			}
+		}
+		if (crashReason != nullptr) {
+			RefuseShader(shader, info, crashReason);
+			return;
 		}
 		MaybeDumpShader(info, xl.source);
 		const GLchar* ptr = xl.source.c_str();

@@ -154,10 +154,6 @@ const SIndexAndCount LuaVAOImpl::GetDrawIndicesImpl(const TObj* obj)
 template<typename TObj>
 int LuaVAOImpl::AddObjectsToSubmissionImpl(int id)
 {
-#ifdef RECOIL_WEB_RENDER
-	LuaUtils::SolLuaError("[LuaVAOImpl::%s]: Indirect submission is unavailable in WebGL2", __func__);
-	return 0;
-#endif
 	DrawCheckInput inputs{
 		std::nullopt,
 		std::nullopt,
@@ -175,10 +171,6 @@ int LuaVAOImpl::AddObjectsToSubmissionImpl(int id)
 template<typename TObj>
 int LuaVAOImpl::AddObjectsToSubmissionImpl(const sol::stack_table& ids)
 {
-#ifdef RECOIL_WEB_RENDER
-	LuaUtils::SolLuaError("[LuaVAOImpl::%s]: Indirect submission is unavailable in WebGL2", __func__);
-	return 0;
-#endif
 	const std::size_t idsSize = ids.size(); //size() is very costly to do in the loop
 
 	DrawCheckInput inputs{
@@ -377,12 +369,14 @@ LuaVAOImpl::DrawCheckResult LuaVAOImpl::DrawCheck(GLenum mode, const DrawCheckIn
 	}
 
 #ifdef RECOIL_WEB_RENDER
-	if (result.baseVertex != 0 || result.baseInstance != 0)
-		LuaUtils::SolLuaError("[LuaVAOImpl::%s]: Nonzero base vertex or base instance is unavailable in WebGL2", __func__);
+	// nonzero base vertex / base instance: emulated by the WebGL shim (WebGLDrawBase.cpp)
 
 	// WebGL2 always uses fixed-index restart. Lua's uint buffers instead use
-	// 0xffffff, so reject them until custom restart can be translated correctly.
-	if (indexed && indxLuaVBO->bufferAttribDefsVec[0].second.type == GL_UNSIGNED_INT)
+	// 0xffffff, so reject them for the strip/loop/fan modes until custom restart can be
+	// translated. List modes (triangles, lines, points: model geometry drawn by
+	// DrawUnitShape GL4 and the like) have no use for restart and draw unchanged.
+	const bool listMode = (mode == GL_TRIANGLES || mode == GL_LINES || mode == GL_POINTS);
+	if (indexed && !listMode && indxLuaVBO->bufferAttribDefsVec[0].second.type == GL_UNSIGNED_INT)
 		LuaUtils::SolLuaError("[LuaVAOImpl::%s]: Custom uint primitive restart is unavailable in WebGL2; use byte or ushort indices", __func__);
 #endif
 
@@ -567,8 +561,12 @@ void LuaVAOImpl::RemoveFromSubmission(int idx)
 void LuaVAOImpl::Submit()
 {
 #ifdef RECOIL_WEB_RENDER
-	LuaUtils::SolLuaError("[LuaVAOImpl::%s]: Indirect submission is unavailable in WebGL2", __func__);
-	return;
+	// WebGL2: the shim emulates the indirect draw (one base-vertex/base-instance draw per
+	// command). Primitive restart is always on there with the fixed index 0xFFFFFFFF and
+	// can't be set; GL_TRIANGLES submissions of model indices don't contain restart indices.
+	vao->Bind();
+	glMultiDrawElementsIndirect(GL_TRIANGLES, GL_UNSIGNED_INT, submitCmds.data(), submitCmds.size(), sizeof(SDrawElementsIndirectCommand));
+	vao->Unbind();
 #else
 	glEnable(GL_PRIMITIVE_RESTART);
 	glPrimitiveRestartIndex(indxLuaVBO->primitiveRestartIndex);
