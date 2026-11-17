@@ -32,6 +32,11 @@ namespace {
 	// WebGL errors stay set until read, so an error of an earlier unchecked call would be
 	// reported by CheckError as this call's: read (and log) it first
 	void ClearPendingError(const char* func) {
+		// error checks around uploads read glGetError, a synchronous GPU-process round trip;
+		// some widgets re-create textures every frame, so only with RECOIL_WEB_TRACE/GLCHECK
+		static const bool on = (std::getenv("RECOIL_WEB_TRACE") != nullptr || std::getenv("RECOIL_WEB_GLCHECK") != nullptr);
+		if (!on)
+			return;
 		const GLenum err = real_glGetError();
 		if (err == GL_NO_ERROR || numLoggedErrors >= 60)
 			return;
@@ -40,6 +45,11 @@ namespace {
 	}
 
 	void CheckError(const char* func, GLenum target, GLint a, GLint b, GLint c, GLint w, GLint h) {
+		// error checks around uploads read glGetError, a synchronous GPU-process round trip;
+		// some widgets re-create textures every frame, so only with RECOIL_WEB_TRACE/GLCHECK
+		static const bool on = (std::getenv("RECOIL_WEB_TRACE") != nullptr || std::getenv("RECOIL_WEB_GLCHECK") != nullptr);
+		if (!on)
+			return;
 		const GLenum err = real_glGetError();
 		if (err == GL_NO_ERROR || numLoggedErrors >= 60)
 			return;
@@ -455,7 +465,14 @@ namespace {
 	}
 
 	// a pending GL error from some earlier call would otherwise be blamed on the upload
-	void DrainErrors() { for (int i = 0; i < 8 && real_glGetError() != GL_NO_ERROR; i++) {} }
+	void DrainErrors() {
+		// error checks around uploads read glGetError, a synchronous GPU-process round trip;
+		// some widgets re-create textures every frame, so only with RECOIL_WEB_TRACE/GLCHECK
+		static const bool on = (std::getenv("RECOIL_WEB_TRACE") != nullptr || std::getenv("RECOIL_WEB_GLCHECK") != nullptr);
+		if (!on)
+			return;
+		for (int i = 0; i < 8 && real_glGetError() != GL_NO_ERROR; i++) {}
+	}
 
 	// glGetError is a synchronous round trip to the GPU process in WebGL (a pipeline stall).
 	// Allocations (glTexImage*, glTexStorage*) are rare and keep their checks; the sub-image
