@@ -127,6 +127,17 @@ Module['preRun'].push(function () {
 	var deleteBuffer = P.deleteBuffer;
 	P.deleteBuffer = function () { var c = caches.get(this); if (c) { c.delete(0x8894); c.delete(0x8895); } return deleteBuffer.apply(this, arguments); };
 
+	// ACTIVE_TEXTURE follows activeTexture (Firefox: 0.2 ms a read, ~2,400 reads a second,
+	// over half the frame before this)
+	cacheable[0x84E0] = true;
+	var activeTexture = P.activeTexture;
+	P.activeTexture = function (unit) {
+		var r = activeTexture.apply(this, arguments);
+		var c = caches.get(this);
+		if (c) c.set(0x84E0, unit);
+		return r;
+	};
+
 	// isEnabled reads the same caps
 	var isEnabled = P.isEnabled;
 	P.isEnabled = function (cap) {
