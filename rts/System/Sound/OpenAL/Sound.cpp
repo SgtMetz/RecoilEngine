@@ -511,7 +511,12 @@ bool CSound::OpenSdlDevice(const std::string& deviceName, SDL_AudioSpec& obtaine
 	desiredSpec.freq = 44100;
 	desiredSpec.padding = 0;
 	desiredSpec.samples = 4096;
+#ifdef ALC_SOFT_loopback
 	desiredSpec.callback = RenderSDLSamples;
+#else
+	// no loopback device (Emscripten's OpenAL): this path is never used, OpenAL opens its own device
+	desiredSpec.callback = nullptr;
+#endif
 	desiredSpec.userdata = this;
 	
 	/* SDL bug: can return devices with >2 channels (3D surround), even if we ask for just 2.

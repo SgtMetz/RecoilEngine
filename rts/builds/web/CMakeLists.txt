@@ -4,8 +4,8 @@
 set(CMAKE_LIBRARY_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}")
 set(CMAKE_RUNTIME_OUTPUT_DIRECTORY "${CMAKE_LIBRARY_OUTPUT_DIRECTORY}")
 
-add_definitions(-DNO_SOUND) # audio is a later milestone
 add_definitions(-DRECOIL_WEB_RENDER)
+remove_definitions(-DNO_SOUND) # the root CMakeLists defines it for the headless-style default; this target has real sound
 remove_definitions(-DAVI_CAPTURING)
 
 find_package(SDL2 MODULE REQUIRED)
@@ -19,7 +19,7 @@ list(APPEND engineWebLibraries SDL2::SDL2)
 list(APPEND engineWebLibraries glad)
 list(APPEND engineWebLibraries Freetype::Freetype)
 list(APPEND engineWebLibraries squish rgetc1)
-list(APPEND engineWebLibraries no-sound)
+list(APPEND engineWebLibraries web-sound)
 list(APPEND engineWebLibraries engineSystemNet)
 list(APPEND engineWebLibraries ${engineCommonLibraries})
 list(APPEND engineWebLibraries ${SPRING_SIM_LIBRARIES})
@@ -30,9 +30,41 @@ list(APPEND engineWebLibraries RmlUi::Debugger)
 list(APPEND engineWebLibraries lunasvg)
 
 include_directories(${ENGINE_SRC_ROOT_DIR}/lib/assimp/include)
+include_directories(${ENGINE_SRC_ROOT_DIR}/lib/wasm-stubs/openal ${EMSCRIPTEN_SYSROOT}/include/AL) # al.h, alc.h, efx.h for the sound headers the game code includes
 include_directories(${ENGINE_SRC_ROOT_DIR}/lib/asio/include)
 include_directories(${ENGINE_SRC_ROOT_DIR}/lib/slimsig/include)
 include_directories(${ENGINE_SRC_ROOT_DIR}/lib/cereal/include)
+
+
+# Audio (B3): the engine's OpenAL sound code on Emscripten's OpenAL (WebAudio, proxied to the
+# page's main thread) and the Ogg/Vorbis ports. Emscripten's OpenAL has no EFX: lib/wasm-stubs/openal/efx.h
+# only declares it, and the engine finds ALC_EXT_EFX absent at run time. Only engine-web uses this;
+# the headless targets stay on no-sound.
+set(webSoundDir "${ENGINE_SRC_ROOT_DIR}/System/Sound")
+add_library(web-sound STATIC
+	${webSoundDir}/ISound.cpp
+	${webSoundDir}/IAudioChannel.cpp
+	${webSoundDir}/Null/NullSound.cpp
+	${webSoundDir}/OpenAL/ALShared.cpp
+	${webSoundDir}/OpenAL/EFX.cpp
+	${webSoundDir}/OpenAL/EFXfuncs.cpp
+	${webSoundDir}/OpenAL/EFXPresets.cpp
+	${webSoundDir}/OpenAL/AudioChannel.cpp
+	${webSoundDir}/OpenAL/OggDecoder.cpp
+	${webSoundDir}/OpenAL/Mp3Decoder.cpp
+	${webSoundDir}/OpenAL/MusicStream.cpp
+	${webSoundDir}/OpenAL/Sound.cpp
+	${webSoundDir}/OpenAL/SoundChannels.cpp
+	${webSoundDir}/OpenAL/SoundBuffer.cpp
+	${webSoundDir}/OpenAL/SoundItem.cpp
+	${webSoundDir}/OpenAL/SoundSource.cpp
+	${webSoundDir}/OpenAL/VorbisShared.cpp
+)
+target_include_directories(web-sound PRIVATE
+	"${ENGINE_SRC_ROOT_DIR}/lib/wasm-stubs/openal"
+	"${EMSCRIPTEN_SYSROOT}/include/AL")
+target_compile_options(web-sound PRIVATE -sUSE_OGG=1 -sUSE_VORBIS=1)
+target_link_libraries(web-sound SDL2::SDL2 Tracy::TracyClient nowide::nowide)
 
 add_library(GameWeb STATIC)
 target_sources(GameWeb PRIVATE ${sources_engine_Game})
@@ -43,7 +75,7 @@ target_link_libraries(GameWeb PRIVATE
 	SDL2::SDL2
 	glad
 	RmlUi::Core
-	no-sound
+	web-sound
 	prd::jsoncpp
 	streflop
 	nowide::nowide
@@ -69,7 +101,7 @@ add_executable(engine-web
 	"${webglStubsInc}"
 	"${ENGINE_SRC_ROOT_DIR}/System/Platform/Emscripten/WebFS.cpp"
 )
-target_link_libraries(engine-web no-sound ${engineWebLibraries} GameWeb no-sound)
+target_link_libraries(engine-web web-sound ${engineWebLibraries} GameWeb web-sound)
 add_dependencies(engine-web generateVersionFiles basecontent)
 
 # Optional: glslang + SPIRV-Cross (built for Emscripten, found through CMAKE_PREFIX_PATH)
@@ -92,6 +124,9 @@ endif ()
 target_link_options(engine-web PRIVATE
 	${RECOIL_WASM_WEB_LINK_OPTIONS}
 	-sUSE_SDL=2
+	-sUSE_OGG=1
+	-sUSE_VORBIS=1
+	-lopenal
 	-sMIN_WEBGL_VERSION=2
 	-sMAX_WEBGL_VERSION=2
 	-sFULL_ES3=1

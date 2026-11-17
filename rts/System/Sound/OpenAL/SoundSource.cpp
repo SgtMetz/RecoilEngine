@@ -281,6 +281,14 @@ void CSoundSource::Play(IAudioChannel* channel, SoundItem* item, float3 pos, flo
 
 	}
 	alSourcePlay(id);
+#ifdef __EMSCRIPTEN__
+	{
+		// browser build: the log shows that sources start (first 40, then a running count)
+		static unsigned numStarts = 0;
+		if (++numStarts <= 40 || (numStarts % 100) == 0)
+			LOG("[Sound] OpenAL source start #%u: %s (%s)", numStarts, item->name.c_str(), itemBuffer.GetFilename().c_str());
+	}
+#endif
 
 	if (itemBuffer.GetId() == 0)
 		LOG_L(L_WARNING, "CSoundSource::Play: Empty buffer for item %s (file %s)", item->name.c_str(), itemBuffer.GetFilename().c_str());

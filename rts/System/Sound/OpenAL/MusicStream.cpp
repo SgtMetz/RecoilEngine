@@ -159,6 +159,9 @@ bool MusicStream::StartPlaying()
 		return false;
 
 	alSourcePlay(source);
+#ifdef __EMSCRIPTEN__
+	LOG("[Sound] OpenAL music stream start (%d buffers decoded)", int(numDecodedStreams));
+#endif
 	return (CheckError("[MusicStream::StartPlaying][2]"));
 }
 
