@@ -990,6 +990,13 @@ namespace {
 		const GLsizei numQuads = count / 4;
 		if (numQuads <= 0)
 			return;
+		if (polygonMode == GL_LINE && instances == 0) {
+			// line mode (e.g. gl.PolygonMode(GL_LINE) + gl.Rect for selection-box outlines):
+			// outline each quad instead of filling it
+			for (GLsizei q = 0; q < numQuads; q++)
+				real_glDrawArrays(GL_LINE_LOOP, first + q * 4, 4);
+			return;
+		}
 
 		GLint prevElemBuf = 0;
 		real_glGetIntegerv(GL_ELEMENT_ARRAY_BUFFER_BINDING, &prevElemBuf);
