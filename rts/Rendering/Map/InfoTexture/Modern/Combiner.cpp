@@ -117,6 +117,10 @@ void CInfoTextureCombiner::Update()
 	using namespace GL::State;
 	auto state = GL::SubState(
 		Blending(GL_TRUE),
+		// the info shaders blend towards their target with a small alpha; do not inherit
+		// whatever blend function the previous draw left (an additive one saturates the
+		// texture to white, an overwriting one snaps it back: a flickering fog overlay)
+		BlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA),
 		ColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_FALSE)
 	);
 
