@@ -132,6 +132,9 @@ target_link_options(engine-web PRIVATE
 	-sFULL_ES3=1
 	-sOFFSCREENCANVAS_SUPPORT=1
 	"-sOFFSCREENCANVASES_TO_PTHREAD=#canvas"
+	# runtime assertions off for the player-facing build: they wrap every proxied call and
+	# GL binding (RECOIL_WASM_WEB_LINK_OPTIONS sets 1; the later flag wins)
+	-sASSERTIONS=0
 	# spring-web.js.symbols: wasm function index -> name, for reading stack traces
 	--emit-symbol-map
 )

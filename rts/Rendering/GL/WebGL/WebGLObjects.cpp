@@ -457,8 +457,15 @@ namespace {
 	// a pending GL error from some earlier call would otherwise be blamed on the upload
 	void DrainErrors() { for (int i = 0; i < 8 && real_glGetError() != GL_NO_ERROR; i++) {} }
 
-	bool UnpackBufferBound() {
-		DrainErrors();
+	// glGetError is a synchronous round trip to the GPU process in WebGL (a pipeline stall).
+	// Allocations (glTexImage*, glTexStorage*) are rare and keep their checks; the sub-image
+	// updates that run every frame (minimap, info textures, font atlas) check only with
+	// RECOIL_WEB_TRACE or RECOIL_WEB_GLCHECK set.
+	const bool checkSubImageErrors = (std::getenv("RECOIL_WEB_TRACE") != nullptr || std::getenv("RECOIL_WEB_GLCHECK") != nullptr);
+
+	bool UnpackBufferBound(bool drain = true) {
+		if (drain)
+			DrainErrors();
 		GLint id = 0;
 		real_glGetIntegerv(GL_PIXEL_UNPACK_BUFFER_BINDING, &id);
 		return (id != 0);
@@ -495,7 +502,7 @@ namespace {
 	}
 
 	void APIENTRY compat_glTexSubImage2D(GLenum target, GLint level, GLint x, GLint y, GLsizei w, GLsizei h, GLenum format, GLenum type, const void* pixels) {
-		const bool pbo = UnpackBufferBound();
+		const bool pbo = UnpackBufferBound(checkSubImageErrors);
 		const RowLengthRestore rowLength;
 		std::vector<float> floats;
 		GLint splatInternal = GL_ALPHA;
@@ -517,7 +524,8 @@ namespace {
 			widened = WidenRGBFloat(format, type, w, h, swapped.empty()? pixels: swapped.data());
 		const void* data = !floats.empty()? static_cast<const void*>(floats.data()): (!splat.empty()? splat.data(): (!widened.empty()? widened.data(): (swapped.empty()? pixels: swapped.data())));
 		real_glTexSubImage2D(target, level, x, y, w, h, format, type, data);
-		CheckError("glTexSubImage2D", target, level, format, type, w, h);
+		if (checkSubImageErrors)
+			CheckError("glTexSubImage2D", target, level, format, type, w, h);
 	}
 
 	void APIENTRY compat_glTexStorage2D(GLenum target, GLsizei levels, GLenum internalFormat, GLsizei w, GLsizei h) {

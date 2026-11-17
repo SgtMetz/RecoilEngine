@@ -4,11 +4,13 @@
 // Only built into engine-web when both libraries were found (RECOIL_WEB_GLSLANG).
 
 #include "WebGLShaderTranslate.h"
+#include "System/Log/ILog.h"
 
 #include <algorithm>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <string>
 
 #ifdef RECOIL_WEB_GLSLANG
 #include <exception>
@@ -70,8 +72,120 @@ bool WebGLCompat::PreprocessGlsl(const std::string& src, std::string& out)
 	return shader.preprocess(GetDefaultResources(), 110, ENoProfile, false, false, EShMsgDefault, &out, includer);
 }
 
+static bool CrossCompileUncached(bool isVertex, const std::string& desktopSrc, WebGLCompat::CrossCompiled& out);
+
+// RECOIL_WEB_SHADER_CACHE=<dir> (the page sets it to a folder in OPFS that survives reloads):
+// results of CrossCompile are kept as <dir>/<hash>.sc, so later starts skip glslang and
+// SPIRV-Cross (about 380 shaders and a large share of BAR's load time). The key covers the
+// input source and stage plus kShaderCacheVersion; bump that when the translation changes.
+namespace {
+	constexpr const char* kShaderCacheVersion = "rwsc2";
+
+	uint64_t Fnv1a(const std::string& s, uint64_t h = 1469598103934665603ull) {
+		for (unsigned char c: s) { h ^= c; h *= 1099511628211ull; }
+		return h;
+	}
+
+	const std::string& ShaderCacheDir() {
+		static const std::string dir = [] {
+			const char* e = std::getenv("RECOIL_WEB_SHADER_CACHE");
+			return std::string((e != nullptr)? e: "");
+		}();
+		return dir;
+	}
+
+	std::string ShaderCachePath(bool isVertex, const std::string& src) {
+		const uint64_t h = Fnv1a(src, Fnv1a(std::string(kShaderCacheVersion) + (isVertex? "v": "f")));
+		char name[40];
+		std::snprintf(name, sizeof(name), "/%016llx.sc", (unsigned long long)h);
+		return ShaderCacheDir() + name;
+	}
+
+	// format: kShaderCacheVersion, then "<n>" and n lines "name<TAB>binding" for the sampler
+	// and the block bindings, then the GLSL ES source to the end of the file
+	bool ReadShaderCache(const std::string& path, const std::string& src, WebGLCompat::CrossCompiled& out) {
+		FILE* f = std::fopen(path.c_str(), "rb");
+		if (f == nullptr)
+			return false;
+		std::string data;
+		char buf[16384];
+		for (size_t n; (n = std::fread(buf, 1, sizeof(buf), f)) > 0; )
+			data.append(buf, n);
+		std::fclose(f);
+
+		size_t pos = 0;
+		const auto line = [&](std::string& l) {
+			const size_t e = data.find('\n', pos);
+			if (e == std::string::npos) return false;
+			l.assign(data, pos, e - pos);
+			pos = e + 1;
+			return true;
+		};
+		std::string l;
+		if (!line(l) || l != kShaderCacheVersion) return false;
+		// the full input is stored too, so a hash collision can't return another shader
+		if (!line(l)) return false;
+		const size_t srcLen = std::strtoull(l.c_str(), nullptr, 10);
+		if (data.compare(pos, srcLen, src) != 0 || pos + srcLen > data.size()) return false;
+		pos += srcLen;
+		for (auto* list: {&out.samplerBindings, &out.blockBindings}) {
+			if (!line(l)) return false;
+			const int n = std::atoi(l.c_str());
+			for (int i = 0; i < n; i++) {
+				if (!line(l)) return false;
+				const size_t tab = l.find('\t');
+				if (tab == std::string::npos) return false;
+				list->emplace_back(l.substr(0, tab), std::atoi(l.c_str() + tab + 1));
+			}
+		}
+		out.source.assign(data, pos, std::string::npos);
+		return !out.source.empty();
+	}
+
+	void WriteShaderCache(const std::string& path, const std::string& src, const WebGLCompat::CrossCompiled& cc) {
+		std::string data = std::string(kShaderCacheVersion) + "\n" + std::to_string(src.size()) + "\n" + src;
+		for (const auto* list: {&cc.samplerBindings, &cc.blockBindings}) {
+			data += std::to_string(list->size()) + "\n";
+			for (const auto& [name, binding]: *list)
+				data += name + "\t" + std::to_string(binding) + "\n";
+		}
+		data += cc.source;
+		const std::string tmp = path + ".tmp";
+		FILE* f = std::fopen(tmp.c_str(), "wb");
+		if (f == nullptr)
+			return;
+		const bool ok = (std::fwrite(data.data(), 1, data.size(), f) == data.size());
+		std::fclose(f);
+		if (!ok || std::rename(tmp.c_str(), path.c_str()) != 0)
+			std::remove(tmp.c_str());
+	}
+
+	int numCacheHits = 0;
+}
+
 bool WebGLCompat::CrossCompile(bool isVertex, const std::string& desktopSrc, CrossCompiled& out)
 {
+	if (ShaderCacheDir().empty())
+		return CrossCompileUncached(isVertex, desktopSrc, out);
+
+	const std::string path = ShaderCachePath(isVertex, desktopSrc);
+	CrossCompiled cached;
+	if (ReadShaderCache(path, desktopSrc, cached)) {
+		out = std::move(cached);
+		numOk++;
+		if (++numCacheHits == 1 || numCacheHits % 100 == 0)
+			LOG("[WebGLCompat] shader cache: %d hits", numCacheHits);
+		return true;
+	}
+	if (!CrossCompileUncached(isVertex, desktopSrc, out))
+		return false;
+	WriteShaderCache(path, desktopSrc, out);
+	return true;
+}
+
+static bool CrossCompileUncached(bool isVertex, const std::string& desktopSrc, WebGLCompat::CrossCompiled& out)
+{
+	using namespace WebGLCompat;
 	if (!InitGlslang()) {
 		out.log = "glslang::InitializeProcess failed";
 		numFailed++;
