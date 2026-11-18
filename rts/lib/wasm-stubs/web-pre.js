@@ -18,14 +18,19 @@ Module['preRun'].push(function () {
 // most of the frame there (under 3 fps). The values below change only through the listed
 // setters, so getParameter answers from a per-context copy that those setters invalidate.
 // Every call goes through these prototype methods, Emscripten's own included. A lost context
-// clears the copy.
+// clears the copy. Off with ?noglcache=1 on the page: the page then loads the engine
+// script as spring-web.js?noglcache=1, and the workers, started from that URL, see it.
 (function () {
 	if (typeof WebGL2RenderingContext === 'undefined') return;
+	if (self.__recoilNoGlCache || (typeof location !== 'undefined' && /[?&]noglcache=1/.test(String(location.href)))) return;
 	var P = WebGL2RenderingContext.prototype;
 	if (P.__recoilStateCache) return;
 	P.__recoilStateCache = true;
 	var BLEND_FUNC = [0x80C8, 0x80C9, 0x80CA, 0x80CB, 0x0BE1, 0x0BE0];
 	var BLEND_EQ = [0x8009, 0x883D];
+	var STENCIL_MASK = [0x0B98, 0x8CA5];
+	var STENCIL_FUNC = [0x0B92, 0x0B93, 0x0B97, 0x8800, 0x8CA3, 0x8CA4];
+	var STENCIL_OP = [0x0B94, 0x0B95, 0x0B96, 0x8801, 0x8802, 0x8803];
 	var invalidates = {
 		blendFunc: BLEND_FUNC, blendFuncSeparate: BLEND_FUNC,
 		blendEquation: BLEND_EQ, blendEquationSeparate: BLEND_EQ,
@@ -33,8 +38,10 @@ Module['preRun'].push(function () {
 		cullFace: [0x0B45], frontFace: [0x0B46], lineWidth: [0x0B21],
 		polygonOffset: [0x2A00, 0x8038],
 		blendColor: [0x8005], clearColor: [0x0C22], clearDepth: [0x0B73],
-		stencilMask: [0x0B98, 0x8CA5], stencilFunc: [0x0B92, 0x0B93, 0x0B94, 0x8800, 0x8CA3, 0x8CA4],
-		stencilOp: [0x0B94, 0x0B95, 0x0B96, 0x8801, 0x8802, 0x8803],
+		// stencil: front (0x0B9x) and back (0x88xx, 0x8CAx) state, set together or per face
+		stencilMask: STENCIL_MASK, stencilMaskSeparate: STENCIL_MASK,
+		stencilFunc: STENCIL_FUNC, stencilFuncSeparate: STENCIL_FUNC,
+		stencilOp: STENCIL_OP, stencilOpSeparate: STENCIL_OP,
 	};
 	var cacheable = {};
 	for (var k in invalidates) invalidates[k].forEach(function (p) { cacheable[p] = true; });
