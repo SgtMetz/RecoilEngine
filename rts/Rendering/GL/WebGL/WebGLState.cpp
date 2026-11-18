@@ -1347,6 +1347,9 @@ namespace {
 		GLint stencilMask;
 		float color[4];
 		GLenum matrixMode;
+		// fog (GL_FOG_BIT): parameters and the GL_FOG enable flag
+		FogState fog;
+		bool fogOn;
 	};
 	std::vector<AttribState> attribStack;
 
@@ -1394,6 +1397,15 @@ namespace {
 			std::memcpy(s.color, currentColor, sizeof(s.color));
 		if (mask & GL_TRANSFORM_BIT)
 			s.matrixMode = matrixMode;
+		if (mask & GL_FOG_BIT) {
+			// CubeMapHandler draws each reflection face with the env-map camera between
+			// glPushAttrib(GL_FOG_BIT) and glPopAttrib(); the sky's SetupFog() in there
+			// moves fog start/end to that camera's range. Without this the ground of the
+			// next frame used those distances on some frames: a flashing distance fog.
+			s.fog = fog;
+			const auto it = localCaps.find(GL_FOG);
+			s.fogOn = (it != localCaps.end() && it->second);
+		}
 		attribStack.push_back(std::move(s));
 	}
 
@@ -1456,6 +1468,11 @@ namespace {
 			SetColor(s.color[0], s.color[1], s.color[2], s.color[3]);
 		if (mask & GL_TRANSFORM_BIT)
 			matrixMode = s.matrixMode;
+		if (mask & GL_FOG_BIT) {
+			fog = s.fog;
+			localCaps[GL_FOG] = s.fogOn;
+			fixedStateStamp++;
+		}
 	}
 
 	// ---- misc desktop entry points with trivial WebGL2 answers --------------------------------
