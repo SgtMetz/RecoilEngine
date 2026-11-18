@@ -15,6 +15,7 @@
 #include "ProtocolDef.h"
 #include "UDPConnection.h"
 #include "Socket.h"
+#include "WebNet.h"
 #include "System/Log/ILog.h"
 #include "System/Platform/errorhandler.h"
 
@@ -31,13 +32,19 @@ UDPListener::UDPListener(int port, const std::string& ip): acceptNewConnections(
 	if (!err.empty())
 		throw network_error(err);
 
-	socket->non_blocking(true);
 	SetAcceptingConnections(true);
+
+	if (web::Active()) {
+		LOG("[%s] listening on virtual port %i (browser relay)", __func__, port);
+		return;
+	}
+	socket->non_blocking(true);
 
 	LOG("[%s] successfully bound socket on port %i", __func__, socket->local_endpoint().port());
 }
 
 UDPListener::~UDPListener() {
+	web::Unbind(socket.get());
 	for (const auto& p: dropMap) {
 		LOG("[%s] dropped %lu packets from unknown IP %s", __func__, (unsigned long) p.second, (p.first).c_str());
 	}
@@ -53,6 +60,13 @@ std::string UDPListener::TryBindSocket(int port, std::shared_ptr<asio::ip::udp::
 
 		if ((port < 0) || (port > 65535))
 			throw std::range_error("Port is out of range [0, 65535]: " + std::to_string(port));
+
+		if (web::Active()) {
+			// the browser build has no socket syscalls: an unopened socket is only a handle
+			sock.reset(new ip::udp::socket(netservice));
+			web::Bind(sock.get(), port);
+			return errorMsg;
+		}
 
 		sock.reset(new ip::udp::socket(netservice));
 		sock->open(ip::udp::v6(), err); // test IP v6 support
@@ -106,6 +120,10 @@ std::string UDPListener::TryBindSocket(int port, std::shared_ptr<asio::ip::udp::
 }
 
 void UDPListener::Update(int loopSleepTime) {
+	if (web::Active()) {
+		UpdateWeb(loopSleepTime);
+		return;
+	}
 	if (loopSleepTime == 0)
 		netservice.poll();
 	else {
@@ -131,23 +149,55 @@ void UDPListener::Update(int loopSleepTime) {
 
 		const size_t bytesReceived = socket->receive_from(asio::buffer(recvBuffer), udpEndPoint, msgFlags, err);
 
+		if (!HandleDatagram(udpEndPoint, bytesReceived, err))
+			break;
+	}
+
+	UpdateKnownConnections();
+}
+
+void UDPListener::UpdateWeb(int loopSleepTime) {
+	// browser multiplayer: datagrams come from the page's relay connection (WebNet.h)
+	if (web::Available(socket.get()) == 0)
+		web::Wait(loopSleepTime);
+
+	size_t bytesAvailable = 0;
+
+	while ((bytesAvailable = web::Available(socket.get())) > 0) {
+		recvBuffer.clear();
+		recvBuffer.resize(bytesAvailable, 0);
+
+		ip::udp::endpoint udpEndPoint;
+		asio::error_code err;
+		const size_t bytesReceived = web::ReceiveFrom(socket.get(), recvBuffer.data(), recvBuffer.size(), udpEndPoint);
+
+		if (!HandleDatagram(udpEndPoint, bytesReceived, err))
+			break;
+	}
+
+	UpdateKnownConnections();
+}
+
+// false: stop reading for this update
+bool UDPListener::HandleDatagram(const asio::ip::udp::endpoint& udpEndPoint, size_t bytesReceived, asio::error_code& err) {
+	{
 		const auto ci = connMap.find(udpEndPoint);
 
 		// known connection but expired
 		if (ci != connMap.end() && ci->second.expired())
-			continue;
+			return true;
 
 		if (CheckErrorCode(err))
-			break;
+			return false;
 
 		if (bytesReceived < Packet::headerSize)
-			continue;
+			return true;
 
 		Packet data(&recvBuffer[0], bytesReceived);
 
 		if (ci != connMap.end()) {
 			ci->second.lock()->ProcessRawPacket(data);
-			continue;
+			return true;
 		}
 
 
@@ -160,7 +210,7 @@ void UDPListener::Update(int loopSleepTime) {
 				incoming->ProcessRawPacket(data);
 			}
 
-			continue;
+			return true;
 		}
 
 
@@ -182,7 +232,10 @@ void UDPListener::Update(int loopSleepTime) {
 		LOG_L(L_DEBUG, "[UDPListener::%s] open connections: %s", __func__, conns.c_str());
 	#endif
 	}
+	return true;
+}
 
+void UDPListener::UpdateKnownConnections() {
 	for (auto i = connMap.cbegin(); i != connMap.cend(); ) {
 		if (i->second.expired()) {
 			LOG_L(L_DEBUG, "[UDPListener::%s] connection closed: [%s]:%i", __func__, i->first.address().to_string().c_str(), i->first.port());

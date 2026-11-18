@@ -839,7 +839,9 @@ void CMouseHandler::ShowMouse()
 
 	hideCursor = false;
 
+#ifndef __EMSCRIPTEN__
 	SDL_SetRelativeMouseMode(SDL_FALSE);
+#endif
 
 	// don't use SDL_ShowCursor here since it would cause flickering with hwCursor
 	// (by switching between default cursor and later the real one, e.g. `attack`)
@@ -863,7 +865,14 @@ void CMouseHandler::HideMouse()
 	// this way the mouse position will never change so it is also unnecessary to call
 	// SDL_WarpMouseInWindow and handle the associated wart of filtering motion events
 	// technically supersedes SDL_ShowCursor as well
+#ifndef __EMSCRIPTEN__
 	SDL_SetRelativeMouseMode(SDL_TRUE);
+#else
+	// browser build: the page owns the pointer lock (web-harness render.js locks it on
+	// the first click into the game). SDL's relative mode would request and exit the
+	// lock from here, which dropped the page's lock on every MMB release. While locked,
+	// SDL already delivers movementX/Y as xrel, which is all MMB scrolling needs.
+#endif
 
 	const int2 viewMouseCenter = GetViewMouseCenter();
 

@@ -78,6 +78,10 @@ public:
 
 	auto& GetSocket() { return socket; }
 private:
+	void UpdateWeb(int loopSleepTime);
+	bool HandleDatagram(const asio::ip::udp::endpoint& udpEndPoint, size_t bytesReceived, asio::error_code& err);
+	void UpdateKnownConnections();
+
 	/**
 	 * @brief Do we accept packets from unknown sources?
 	 * If true, we will create a new connection, if false, they get dropped.

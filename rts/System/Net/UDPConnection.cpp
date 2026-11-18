@@ -6,6 +6,7 @@
 
 
 #include "Socket.h"
+#include "WebNet.h"
 #include "ProtocolDef.h"
 #include "Exception.h"
 #include "Net/Protocol/BaseNetProtocol.h"
@@ -245,6 +246,14 @@ UDPConnection::UDPConnection(int sourcePort, const std::string& address, const u
 	asio::error_code err;
 	addr = ResolveAddr(address, port, &err);
 
+	if (web::Active()) {
+		// the browser build has no socket syscalls: an unopened socket is only a handle
+		mySocket.reset(new ip::udp::socket(netcode::netservice));
+		web::Bind(mySocket.get(), sourcePort);
+		Init();
+		return;
+	}
+
 	ip::address sourceAddr = GetAnyAddress(addr.address().is_v6());
 	std::shared_ptr<ip::udp::socket> tempSocket(new ip::udp::socket(
 			netcode::netservice, ip::udp::endpoint(sourceAddr, sourcePort)));
@@ -439,11 +448,13 @@ void UDPConnection::Update()
 
 	if (!sharedSocket && !closed) {
 		// duplicated code with UDPListener
-		netservice.poll();
+		const bool viaWeb = web::Active();
+		if (!viaWeb)
+			netservice.poll();
 
 		size_t bytesAvailable = 0;
 
-		while ((bytesAvailable = mySocket->available()) > 0) {
+		while ((bytesAvailable = (viaWeb? web::Available(mySocket.get()): mySocket->available())) > 0) {
 			recvBuffer.clear();
 			recvBuffer.resize(bytesAvailable, 0);
 
@@ -451,7 +462,9 @@ void UDPConnection::Update()
 			ip::udp::socket::message_flags msgFlags = 0;
 			asio::error_code err;
 
-			const size_t bytesReceived = mySocket->receive_from(asio::buffer(recvBuffer), udpEndPoint, msgFlags, err);
+			const size_t bytesReceived = viaWeb?
+				web::ReceiveFrom(mySocket.get(), recvBuffer.data(), recvBuffer.size(), udpEndPoint):
+				mySocket->receive_from(asio::buffer(recvBuffer), udpEndPoint, msgFlags, err);
 
 			if (CheckErrorCode(err))
 				break;
@@ -1057,7 +1070,10 @@ void UDPConnection::SendPacket(Packet& pkt)
 	asio::error_code err;
 
 	EMULATE_LATENCY( !EMULATE_PACKET_LOSS( LOSS_COUNTER ) ) {
-		mySocket->send_to(buffer(sendBuffer), addr, flags, err);
+		if (web::Active())
+			web::SendTo(mySocket.get(), sendBuffer.data(), sendBuffer.size(), addr);
+		else
+			mySocket->send_to(buffer(sendBuffer), addr, flags, err);
 	}
 
 	if (CheckErrorCode(err))
@@ -1133,6 +1149,7 @@ void UDPConnection::Close(bool flush) {
 	Flush(flush);
 	muted = true;
 	if (!sharedSocket) {
+		web::Unbind(mySocket.get());
 		try {
 			mySocket->close();
 		} catch (const asio::system_error& ex) {

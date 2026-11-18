@@ -13,6 +13,7 @@
 #include "System/FileSystem/RapidHandler.h"
 #include "System/SpringHash.h"
 #include "System/Log/ILog.h"
+#include <cstdlib>
 
 #include <algorithm>
 #include <numeric>
@@ -673,8 +674,12 @@ bool CGameSetup::Init(const std::string& buf)
 #ifdef __EMSCRIPTEN__
 	// no UDP on WASM (Emscripten sockets are WebSocket-backed and cannot even
 	// resolve "localhost" under Node); local games and replays never need the
-	// listener, so never open it
-	onlyLocal = true;
+	// listener, so never open it; browser multiplayer (RECOIL_WEB_NET=1) carries the
+	// server's datagrams over the page's relay connection instead (System/Net/WebNet.h)
+	{
+		const char* webNet = std::getenv("RECOIL_WEB_NET");
+		onlyLocal = !(webNet != nullptr && webNet[0] == '1');
+	}
 #endif
 
 	return true;

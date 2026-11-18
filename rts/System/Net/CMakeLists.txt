@@ -10,5 +10,6 @@ add_library(engineSystemNet STATIC
 		"${CMAKE_CURRENT_SOURCE_DIR}/UDPConnection.cpp"
 		"${CMAKE_CURRENT_SOURCE_DIR}/UDPListener.cpp"
 		"${CMAKE_CURRENT_SOURCE_DIR}/UnpackPacket.cpp"
+		"${CMAKE_CURRENT_SOURCE_DIR}/WebNet.cpp"
 	)
 
